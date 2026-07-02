@@ -46,7 +46,7 @@ class MHATransformer(nn.Module):
         ffn_out = self.ffn(norm_x)
 
         # Dropout
-        ffn_out = self.dropout(x)
+        ffn_out = self.dropout(ffn_out)
 
         # Residual
         x = x + ffn_out

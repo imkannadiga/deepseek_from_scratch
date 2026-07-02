@@ -16,7 +16,7 @@ class SinosoidalPositionalEmbedding(torch.nn.Module):
         return self.embed_map[:T]
 
     def _precompute(self):
-        positions = torch.arange(self.max_length).unsqeeze(1)
+        positions = torch.arange(self.max_length).unsqueeze(1)
         pair_idx = torch.arange(0, self.d_model, 2)
 
         div_terms = torch.exp(-pair_idx * (math.log(10000)/self.d_model))
