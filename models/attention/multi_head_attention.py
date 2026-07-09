@@ -52,7 +52,7 @@ class MultiHeadAttention(torch.nn.Module):
     mask = torch.ones((num_tokens, num_tokens), device=x.device)
     mask = torch.tril(mask)
 
-    masked_attn_scores = attn_scores.masked_fill(mask==0.0, -torch.inf)
+    masked_attn_scores = attn_scores.masked_fill(mask==torch.tensor(0.0, device=x.device), -torch.inf)
 
     A = torch.softmax(masked_attn_scores, dim=-1)
     ctx_unstacked = A @ V
