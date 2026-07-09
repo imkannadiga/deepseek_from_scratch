@@ -33,16 +33,16 @@ MAX_SEQ_LEN   = 128
 # training
 SEQ_LEN       = 128
 BATCH_SIZE    = 32
-N_STEPS       = 5000
+N_STEPS       = 50000
 LR_PEAK = 3e-4
 LR_MIN  = 3e-5
 
 # logging / checkpointing
-LOG_EVERY     = 50
-EVAL_EVERY    = 200
-EVAL_STEPS    = 20
-SAVE_EVERY    = 500
-CKPT_PATH     = "checkpoints/trial/train.pt"
+LOG_EVERY     = 500
+EVAL_EVERY    = 2000
+EVAL_STEPS    = 100
+SAVE_EVERY    = 10000
+CKPT_PATH     = "checkpoints/gpt2_atch/train.pt"
 
 DEVICE        = "cuda" if torch.cuda.is_available() else "cpu"
 

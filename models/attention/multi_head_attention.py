@@ -49,7 +49,7 @@ class MultiHeadAttention(torch.nn.Module):
 
     # Mask upper triangle and replace with -inf
 
-    mask = torch.ones((num_tokens, num_tokens))
+    mask = torch.ones((num_tokens, num_tokens), device=x.device)
     mask = torch.tril(mask)
 
     masked_attn_scores = attn_scores.masked_fill(mask==0.0, -torch.inf)
