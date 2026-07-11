@@ -11,7 +11,7 @@ Usage:
 import torch
 from tokenizer.bpe_tokenizer import BPETokenizer
 from data.shakesphere import ShakespeareDataset
-from models.gpt import GPT2
+from models.deepseek import DeepSeek
 from training.trainer import Trainer
 from torch.optim.lr_scheduler import LinearLR
 
@@ -21,6 +21,7 @@ from torch.optim.lr_scheduler import LinearLR
 
 # data
 CORPUS_PATH   = "./data/_data/tiny_shakesphere.txt"
+TOKENIZER_PATH = "./data/_data/tokenizer/tiny_shakesphere/"
 VOCAB_SIZE    = 2000
 MIN_FREQ      = 5
 
@@ -64,7 +65,7 @@ print(f"Corpus: {len(raw_text):,} characters")
 
 tokenizer = BPETokenizer()
 t0 = time.time()
-tokenizer.train(raw_text, vocab_size=VOCAB_SIZE, min_occurrences=MIN_FREQ)
+tokenizer.load_or_train('tiny_shakesphere',TOKENIZER_PATH,raw_text, vocab_size=VOCAB_SIZE, min_occurrences=MIN_FREQ)
 print(f"Tokenizer trained in {time.time() - t0:.1f}s")
 print(f"Actual vocab size: {len(tokenizer.vocab)}")
 print()
@@ -105,9 +106,10 @@ print("=" * 60)
 # separately from the actual tokenizer output or you risk a mismatch
 vocab_size = len(tokenizer.vocab)
 
-model = GPT2(
+model = DeepSeek(
     vocab_size=vocab_size,
     d_in=D_IN,
+    d_kv = D_IN // 2,
     max_seq_length=MAX_SEQ_LEN,
     d_transformer=D_IN,
     n_blocks=N_BLOCKS,

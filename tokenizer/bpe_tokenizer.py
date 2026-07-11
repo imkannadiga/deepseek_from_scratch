@@ -1,4 +1,7 @@
 import re
+import os
+from hashlib import sha256
+import pickle
 
 PATTERN = re.compile(r""" ?[a-zA-Z]+| ?[0-9]+| ?[^\sa-zA-Z0-9]+|\s+""")
 
@@ -114,3 +117,39 @@ class BPETokenizer:
     def decode(self, ids):
         symbols = [self.id_to_symbol[i] for i in ids]
         return ''.join(symbols)
+
+    def _state_file(self, path):
+        return os.path.join(path, 'tokenizer.pkl')
+
+    def save(self, path, sha_code):
+        if path is None:
+            return
+
+        os.makedirs(path, exist_ok=True)
+        state = {
+            'sha': sha_code,
+            'merges': self.merges,
+            'vocab': self.vocab,
+            'id_to_symbol': self.id_to_symbol,
+        }
+        with open(self._state_file(path), 'wb') as f:
+            pickle.dump(state, f, pickle.HIGHEST_PROTOCOL)
+
+    def load_or_train(self, dataset_name, tok_path, corpus_text, vocab_size, min_occurrences=1):
+        sha = sha256(f'{dataset_name}_{vocab_size}_{corpus_text[:100]}'.encode()).hexdigest()
+
+        # Reuse a stored tokenizer only if it was trained on the same config/corpus.
+        if tok_path is not None and os.path.exists(self._state_file(tok_path)):
+            with open(self._state_file(tok_path), 'rb') as f:
+                state = pickle.load(f)
+            if state['sha'] == sha:
+                print("Stored tokenizer found, loading....")
+                self.merges = state['merges']
+                self.vocab = state['vocab']
+                self.id_to_symbol = state['id_to_symbol']
+                return
+
+        print("No matching tokenizer found. Training now.....")
+        self.train(corpus_text, vocab_size, min_occurrences)
+        print("Tokenizer trained, storing now....")
+        self.save(tok_path, sha)

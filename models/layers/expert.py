@@ -1,7 +1,7 @@
 import torch
 
 class Expert(torch.nn.Module):
-    def __init__(self, embed_dim, dropout):
+    def __init__(self, embed_dim, dropout=0.1):
         super().__init__()
 
         self.net = torch.nn.Sequential(
