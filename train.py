@@ -33,7 +33,7 @@ MAX_SEQ_LEN   = 128
 
 # training
 SEQ_LEN       = 128
-BATCH_SIZE    = 32
+BATCH_SIZE    = 1024
 N_STEPS       = 50000
 LR_PEAK = 3e-4
 LR_MIN  = 3e-5
