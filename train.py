@@ -26,7 +26,7 @@ VOCAB_SIZE    = 2000
 MIN_FREQ      = 5
 
 # model
-D_IN          = 256
+D_IN          = 64
 N_BLOCKS      = 2
 N_HEADS       = 4
 MAX_SEQ_LEN   = 256 # CONTEXT SIZE
