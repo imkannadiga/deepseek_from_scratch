@@ -26,14 +26,14 @@ VOCAB_SIZE    = 2000
 MIN_FREQ      = 5
 
 # model
-D_IN          = 128
+D_IN          = 256
 N_BLOCKS      = 4
 N_HEADS       = 4
-MAX_SEQ_LEN   = 128
+MAX_SEQ_LEN   = 256 # CONTEXT SIZE
 
 # training
 SEQ_LEN       = 128
-BATCH_SIZE    = 1024
+BATCH_SIZE    = 64
 N_STEPS       = 50000
 LR_PEAK = 3e-4
 LR_MIN  = 3e-5
@@ -137,9 +137,12 @@ print("=" * 60)
 print("STEP 4: Building optimizer")
 print("=" * 60)
 
-optimizer = torch.optim.AdamW(model.parameters(), lr=LR_PEAK)
+optimizer = torch.optim.AdamW(model.parameters(), lr=LR_PEAK, weight_decay=0.1)
 print(f"AdamW optimizer, lr_peak={LR_PEAK}")
 print()
+
+print("Compiling model.....")
+model = torch.compile(model)
 
 # ---------------------------------------------------------------
 # Step 5: train
