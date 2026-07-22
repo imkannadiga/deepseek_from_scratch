@@ -22,18 +22,18 @@ from torch.optim.lr_scheduler import LinearLR
 # data
 CORPUS_PATH   = "./data/_data/tiny_shakesphere.txt"
 TOKENIZER_PATH = "./data/_data/tokenizer/tiny_shakesphere/"
-VOCAB_SIZE    = 2000
+VOCAB_SIZE    = 1000
 MIN_FREQ      = 5
 
 # model
-D_IN          = 64
+D_IN          = 32
 N_BLOCKS      = 2
 N_HEADS       = 4
 MAX_SEQ_LEN   = 256 # CONTEXT SIZE
 
 # training
 SEQ_LEN       = 128
-BATCH_SIZE    = 64
+BATCH_SIZE    = 1024
 N_STEPS       = 50000
 LR_PEAK = 3e-4
 LR_MIN  = 3e-5
@@ -123,7 +123,7 @@ print(f"Device: {DEVICE}")
 # one forward pass to confirm shapes before training
 with torch.no_grad():
     test_x, _ = dataset.get_batch("train", batch_size=2, seq_len=SEQ_LEN)
-    test_logits = model(test_x)
+    test_logits, _ = model(test_x)
     assert test_logits.shape == (2, SEQ_LEN, vocab_size), \
         f"Unexpected logits shape: {test_logits.shape}"
     print(f"Model forward pass shape check: PASS {tuple(test_logits.shape)}")

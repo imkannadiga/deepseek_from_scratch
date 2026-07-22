@@ -65,6 +65,7 @@ class Trainer:
         tokenizer=None,
         prompt_text=None,
         max_new_tokens=80,
+        aux_loss_coeff=0.1,
     ):
         self.model            = model
         self.dataset          = dataset
@@ -85,10 +86,13 @@ class Trainer:
         self.tokenizer        = tokenizer
         self.prompt_text      = prompt_text
         self.max_new_tokens   = max_new_tokens
+        self.aux_loss_coeff   = aux_loss_coeff
 
         # running stats
         self.step             = 0
         self.train_loss_accum = []
+        self.main_loss_accum  = []
+        self.aux_loss_accum   = []
 
         # --- LR scheduler ---
         # optimizer's base LR must be lr_peak -- the scheduler multiplies
@@ -135,11 +139,15 @@ class Trainer:
         Returns:
             loss : scalar tensor
         """
-        logits = self.model(x)                        # (B, T, vocab_size)
+        logits, aux_loss = self.model(x)                        # (B, T, vocab_size)
         B, T, vocab_size = logits.shape
         logits = logits.view(B * T, vocab_size)       # (B*T, vocab_size)
         y = y.view(B * T)                             # (B*T,)
-        return F.cross_entropy(logits, y)
+
+        main_loss = F.cross_entropy(logits, y)
+        total_loss = main_loss + self.aux_loss_coeff * aux_loss
+
+        return total_loss, main_loss.item(), aux_loss.item()
 
 
     # ------------------------------------------------------------------
@@ -159,7 +167,7 @@ class Trainer:
 
         self.optimizer.zero_grad()
 
-        loss = self._forward_and_loss(x, y)
+        loss, main_loss, aux_loss = self._forward_and_loss(x, y)
         loss.backward()
 
         if self.grad_clip is not None:
@@ -169,7 +177,7 @@ class Trainer:
         self.scheduler.step()   # must come AFTER optimizer.step()
                                 # updates LR for the NEXT step
 
-        return loss.item()
+        return loss.item(), main_loss, aux_loss
 
 
     # ------------------------------------------------------------------
@@ -184,11 +192,18 @@ class Trainer:
         """
         self.model.eval()
 
-        losses = []
+        total_losses = []
+        main_losses = []
+        aux_losses = []
         for _ in range(self.eval_steps):
             x, y = self.dataset.get_batch(split, self.batch_size, self.seq_len)
-            losses.append(self._forward_and_loss(x, y).item())
-        mean_loss = sum(losses) / len(losses)
+            total_loss, main_loss, aux_loss = self._forward_and_loss(x, y)
+            total_losses.append(total_loss.item())
+            main_losses.append(main_loss)
+            aux_losses.append(aux_loss)
+        mean_loss = sum(total_losses) / len(total_losses)
+        mean_main_loss = sum(main_losses) / len(main_losses)
+        mean_aux_loss = sum(aux_losses) / len(aux_losses)
 
         # generation sample -- skipped if no prompt was provided
         if self.prompt_ids is not None:
@@ -232,7 +247,7 @@ class Trainer:
             # once you add caching this number should jump significantly
             print("---\n")
 
-        return mean_loss
+        return mean_loss, mean_main_loss, mean_aux_loss
 
 
     @torch.no_grad()
@@ -266,7 +281,7 @@ class Trainer:
 
             # full forward pass -- naive: recomputes attention over full
             # context every single step. KV cache eliminates this redundancy
-            logits = self.model(context_cropped)            # (1, T', vocab_size)
+            logits, _ = self.model(context_cropped)         # (1, T', vocab_size)
 
             # only the last position predicts the next token
             last_logits = logits[:, -1, :]                 # (1, vocab_size)
@@ -315,17 +330,14 @@ class Trainer:
     # logging
     # ------------------------------------------------------------------
 
-    def _log(self, step, loss, t0, split="train"):
+    def _log(self, step, total_loss, main_loss, aux_loss, t0, split="train"):
         elapsed = time.time() - t0
         steps_per_sec = self.log_every / elapsed
-
-        # read LR from scheduler rather than recomputing --
-        # confirms the value that was actually applied
         current_lr = self.scheduler.get_last_lr()[0]
-
         print(
             f"step {step:5d} | "
-            f"{split}_loss {loss:.4f} | "
+            f"{split}_loss {main_loss:.4f} | "
+            f"aux_loss {aux_loss:.4f} | "
             f"lr {current_lr:.2e} | "
             f"{steps_per_sec:.2f} steps/sec"
         )
@@ -353,20 +365,28 @@ class Trainer:
             self.step = step
 
             # --- train ---
-            loss = self._train_step()
+            loss, main_loss, aux_loss = self._train_step()
             self.train_loss_accum.append(loss)
+            self.main_loss_accum.append(main_loss)
+            self.aux_loss_accum.append(aux_loss)
+                        
 
             # --- log ---
             if step % self.log_every == 0 and step > 0:
                 avg_loss = sum(self.train_loss_accum) / len(self.train_loss_accum)
-                self._log(step, avg_loss, t0, "train")
+                avg_main_loss = sum(self.main_loss_accum) / len(self.main_loss_accum)
+                avg_aux_loss = sum(self.aux_loss_accum) / len(self.aux_loss_accum)
+                self._log(step, avg_loss, avg_main_loss, avg_aux_loss , t0, "train")
                 self.train_loss_accum = []
+                self.main_loss_accum = []
+                self.aux_loss_accum = []
+
                 t0 = time.time()
 
             # --- eval ---
             if step % self.eval_every == 0 and step > 0:
-                test_loss = self._eval_loss("test")
-                self._log(step, test_loss, t0, "test")
+                test_loss, test_main_loss, test_aux_loss = self._eval_loss("test")
+                self._log(step, test_loss, test_main_loss, test_aux_loss, t0, "test")
 
             # --- checkpoint ---
             if step % self.save_every == 0 and step > 0:
@@ -376,8 +396,11 @@ class Trainer:
         # --- final val eval (first and only look at the val split) ---
         print()
         print("Training complete.")
-        val_loss = self._eval_loss("val")
-        print(f"Final val loss: {val_loss:.4f}")
+        val_loss, val_main_loss, val_aux_loss = self._eval_loss("val")
+        print(
+            f"Final val loss: {val_loss:.4f} "
+            f"(main {val_main_loss:.4f}, aux {val_aux_loss:.4f})"
+        )
 
         # --- final checkpoint ---
         self._save_checkpoint()
