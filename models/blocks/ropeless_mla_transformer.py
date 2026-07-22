@@ -3,7 +3,7 @@ from models.attention.ropeless_mla import RopelessMLA
 from models.layers.sparse_moe import MoE
 
 class RopelessMLATransformer(nn.Module):
-    def __init__(self, d_in, d_kv, d_model, num_heads, dropout_p=0.2, num_experts=8, top_k=3):
+    def __init__(self, d_in, d_kv, d_model, num_heads, dropout_p=0.2, num_experts=4, top_k=2):
         super().__init__()
 
         self.d_in = d_in

@@ -27,7 +27,7 @@ MIN_FREQ      = 5
 
 # model
 D_IN          = 256
-N_BLOCKS      = 4
+N_BLOCKS      = 2
 N_HEADS       = 4
 MAX_SEQ_LEN   = 256 # CONTEXT SIZE
 
@@ -81,7 +81,7 @@ print("=" * 60)
 dataset = ShakespeareDataset(
     path=CORPUS_PATH,
     tokenizer=tokenizer,
-    test_split=0.1,
+    test_split=0.2,
     val_split=0.1,
     device=DEVICE,
 )
