@@ -41,7 +41,7 @@ class RopelessMLATransformer(nn.Module):
         norm_x = self.ln_2(x)
 
         # FFN 
-        moe_out, aux_loss = self.MoE(norm_x)
+        moe_out = self.MoE(norm_x)
 
         # Dropout
         moe_out = self.dropout(moe_out)
@@ -49,4 +49,4 @@ class RopelessMLATransformer(nn.Module):
         # Residual
         x = x + moe_out
 
-        return x, aux_loss
+        return x

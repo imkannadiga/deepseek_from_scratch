@@ -3,11 +3,12 @@ from models.layers.top_k_router import TopKRouter
 from models.layers.expert import Expert
 
 class MoE(torch.nn.Module):
-    def __init__(self, embed_dim, n_experts, top_k):
+    def __init__(self, embed_dim, n_experts, top_k, gamma=0.001):
         super().__init__()
 
         self.router = TopKRouter(embed_dim, n_experts, top_k)
         self.n_experts = n_experts
+        self.gamma = gamma
         self.experts = torch.nn.ModuleList([*[Expert(embed_dim=embed_dim) for _ in range(n_experts)]])
 
     def forward(self, x):
@@ -33,9 +34,14 @@ class MoE(torch.nn.Module):
             expert_weights = routing_matrix[expert_mask, i].unsqueeze(-1) # (n, 1)
 
             final_output[expert_mask] += expert_weights * expert_output
-        f = expert_counts / (B * T * self.router.top_k)
-        p = routing_matrix.mean(dim=0)
 
-        aux_loss = self.n_experts * (f * p).sum()
+        self._update_bias(expert_counts)
 
-        return final_output.view(B, T, embed_dim), aux_loss
+        return final_output.view(B, T, embed_dim)
+
+    @torch.no_grad()
+    def _update_bias(self, expert_counts):
+        total = expert_counts.sum()
+        target = total / self.n_experts
+        diff = expert_counts - target                   # positive = overloaded, negative = underloaded
+        self.router.bias -= self.gamma * diff.sign()    # sign gives -1, 0, or +1

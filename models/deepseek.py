@@ -29,16 +29,14 @@ class DeepSeek(torch.nn.Module):
         # Token embedding + Positional embedding
         x_embed = self.input_embedding(x) + self.pos_embedding(x)
 
-        # N transformer blocks
-        total_aux_loss = torch.tensor(0.0, device=x.device)
-
+        # n transformer blocks
         for trans in self.transformer_blocks:
-            x_embed, aux_loss = trans(x_embed)
-            total_aux_loss += aux_loss
+            x_embed = trans(x_embed)
+
         # Layer norm
         x_norm = self.final_ln(x_embed)
 
         # Output projection from d_model to vocab_size
         out = self.out_proj(x_norm)
 
-        return out, total_aux_loss
+        return out

@@ -123,7 +123,7 @@ print(f"Device: {DEVICE}")
 # one forward pass to confirm shapes before training
 with torch.no_grad():
     test_x, _ = dataset.get_batch("train", batch_size=2, seq_len=SEQ_LEN)
-    test_logits, _ = model(test_x)
+    test_logits = model(test_x)
     assert test_logits.shape == (2, SEQ_LEN, vocab_size), \
         f"Unexpected logits shape: {test_logits.shape}"
     print(f"Model forward pass shape check: PASS {tuple(test_logits.shape)}")

@@ -92,7 +92,7 @@ def stream_generate(model, tokenizer, prompt_ids, max_new_tokens, device, temper
     for _ in range(max_new_tokens):
         context_cropped = context[:, -MAX_SEQ_LEN:]
 
-        logits, _ = model(context_cropped)   # (1, T', vocab_size)
+        logits = model(context_cropped)       # (1, T', vocab_size)
         last_logits = logits[:, -1, :]        # (1, vocab_size)
 
         if greedy:
