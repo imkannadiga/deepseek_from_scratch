@@ -4,9 +4,13 @@ sample.py
 Load a trained checkpoint and stream generated text from a prompt given on
 the command line.
 
+Model hyperparameters are read from the config stored inside the checkpoint,
+so this works for any architecture without editing anything here.
+
 Usage:
     python sample.py "First Citizen:\nBefore we proceed" 200
     python sample.py "First Citizen:\nBefore we proceed" 200 --greedy
+    python sample.py "..." 200 --checkpoint checkpoints/gpt-2/train.pt
 """
 
 import argparse
@@ -15,32 +19,37 @@ import pickle
 
 import torch
 import torch.nn.functional as F
+from hydra.utils import instantiate
+from omegaconf import OmegaConf
 
 from tokenizer.bpe_tokenizer import BPETokenizer
-from models.deepseek import DeepSeek
 
-# model config must match the checkpoint being loaded -- checkpoints only
-# store weights, not hyperparameters, so these mirror train.py's config
-D_IN          = 32
-D_KV          = D_IN // 2
-N_BLOCKS      = 2
-N_HEADS       = 4
-MAX_SEQ_LEN   = 256
-
-TOKENIZER_PATH = "./data/_data/tokenizer/tiny_shakesphere/"
-CKPT_PATH      = "checkpoints/gpt2_atch/train.pt"
+DEFAULT_CKPT = "checkpoints/deepseek-v2/train.pt"
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Sample from a trained DeepSeek checkpoint")
+    parser = argparse.ArgumentParser(description="Sample from a trained checkpoint")
     parser.add_argument("prompt", type=str, help="Prompt text to seed generation")
     parser.add_argument("max_new_tokens", type=int, help="Number of tokens to generate")
-    parser.add_argument("--checkpoint", type=str, default=CKPT_PATH, help="Path to checkpoint file")
-    parser.add_argument("--tokenizer_path", type=str, default=TOKENIZER_PATH, help="Path to trained tokenizer dir")
+    parser.add_argument("--checkpoint", type=str, default=DEFAULT_CKPT, help="Path to checkpoint file")
+    parser.add_argument("--tokenizer_path", type=str, default=None, help="Override tokenizer dir from the checkpoint config")
     parser.add_argument("--temperature", type=float, default=0.8, help="Sampling temperature")
     parser.add_argument("--greedy", action="store_true", help="Use greedy decoding instead of sampling")
     parser.add_argument("--seed", type=int, default=None, help="Random seed for sampling")
     return parser.parse_args()
+
+
+def load_checkpoint(checkpoint_path, device):
+    if not os.path.exists(checkpoint_path):
+        raise FileNotFoundError(f"No checkpoint found at {checkpoint_path}")
+
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    if checkpoint.get("config") is None:
+        raise ValueError(
+            f"{checkpoint_path} has no stored config -- it predates Hydra. "
+            "Retrain, or pass the model config in by hand."
+        )
+    return checkpoint, OmegaConf.create(checkpoint["config"])
 
 
 def load_tokenizer(tokenizer_path):
@@ -57,21 +66,9 @@ def load_tokenizer(tokenizer_path):
     return tokenizer
 
 
-def load_model(checkpoint_path, vocab_size, device):
-    if not os.path.exists(checkpoint_path):
-        raise FileNotFoundError(f"No checkpoint found at {checkpoint_path}")
+def load_model(checkpoint, cfg, vocab_size, device):
+    model = instantiate(cfg.model, vocab_size=vocab_size).to(device)
 
-    model = DeepSeek(
-        vocab_size=vocab_size,
-        d_in=D_IN,
-        d_kv=D_KV,
-        max_seq_length=MAX_SEQ_LEN,
-        d_transformer=D_IN,
-        n_blocks=N_BLOCKS,
-        transformer_n_heads=N_HEADS,
-    ).to(device)
-
-    checkpoint = torch.load(checkpoint_path, map_location=device)
     state_dict = checkpoint["model_state_dict"]
 
     # strip torch.compile's "_orig_mod." prefix if the checkpoint was saved
@@ -81,16 +78,16 @@ def load_model(checkpoint_path, vocab_size, device):
     model.load_state_dict(state_dict)
     model.eval()
 
-    print(f"Loaded checkpoint from {checkpoint_path} (step {checkpoint.get('step', '?')})")
+    print(f"Loaded {cfg.name} from step {checkpoint.get('step', '?')}")
     return model
 
 
 @torch.no_grad()
-def stream_generate(model, tokenizer, prompt_ids, max_new_tokens, device, temperature, greedy):
+def stream_generate(model, tokenizer, prompt_ids, max_new_tokens, max_seq_len, temperature, greedy):
     context = prompt_ids.unsqueeze(0)   # (1, T_prompt)
 
     for _ in range(max_new_tokens):
-        context_cropped = context[:, -MAX_SEQ_LEN:]
+        context_cropped = context[:, -max_seq_len:]
 
         logits = model(context_cropped)       # (1, T', vocab_size)
         last_logits = logits[:, -1, :]        # (1, vocab_size)
@@ -119,8 +116,12 @@ def main():
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    tokenizer = load_tokenizer(args.tokenizer_path)
-    model = load_model(args.checkpoint, vocab_size=len(tokenizer.vocab), device=device)
+    checkpoint, cfg = load_checkpoint(args.checkpoint, device)
+
+    tokenizer_path = args.tokenizer_path or cfg.tokenizer.path
+    tokenizer = load_tokenizer(tokenizer_path)
+
+    model = load_model(checkpoint, cfg, vocab_size=len(tokenizer.vocab), device=device)
 
     prompt_ids = torch.tensor(tokenizer.encode(args.prompt), dtype=torch.long, device=device)
 
@@ -130,7 +131,7 @@ def main():
         tokenizer,
         prompt_ids,
         max_new_tokens=args.max_new_tokens,
-        device=device,
+        max_seq_len=cfg.model.max_seq_length,
         temperature=args.temperature,
         greedy=args.greedy,
     )

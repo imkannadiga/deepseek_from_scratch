@@ -1,0 +1,63 @@
+# GPT-2 style: MHA + dense FFN + sinusoidal positional embeddings
+# Baseline for the three-way comparison. Everything outside the `model` block
+# is identical across gpt-2 / deepseek-v1 / deepseek-v2 -- only architecture varies.
+# Run with: python train.py --config-name gpt-2
+
+name: gpt-2
+
+seed: 1337
+device: auto        # auto | cuda | cpu
+compile: false      # keep false across all three so wall-clock stays comparable
+
+data:
+  dataset_name: tiny_shakesphere
+  corpus_path: ./data/_data/tiny_shakesphere.txt
+  test_split: 0.05             # 5/5 split leaves 90% (~394K tokens) for training
+  val_split: 0.05
+
+tokenizer:
+  path: ./data/_data/tokenizer/tiny_shakesphere/
+  vocab_size: 1000
+  min_occurrences: 10
+
+model:
+  _target_: models.gpt_v2.GPT2
+  d_in: 192
+  max_seq_length: 256          # context limit -- sizes the positional embedding
+  d_transformer: 192
+  n_blocks: 6
+  transformer_n_heads: 6       # head_dim = 32
+  d_ff: 768                    # 4 * d_in, the standard dense FFN
+  dropout: 0.2                 # essential -- 3M params on ~394K tokens
+
+optimizer:
+  _target_: torch.optim.AdamW
+  weight_decay: 0.1
+  betas: [0.9, 0.95]           # lr comes from training.lr_peak
+
+training:
+  n_steps: 3000
+  batch_size: 32
+  seq_len: 256                 # must be <= model.max_seq_length
+  lr_peak: 1e-3
+  lr_min: 1e-4
+  warmup_steps: 100
+  grad_clip: 1.0
+
+eval:
+  log_every: 100
+  eval_every: 100              # frequent -- best val lands well before step 3000
+  eval_steps: 40
+  prompt: "First Citizen:\nBefore we proceed"
+  max_new_tokens: 100
+  temperature: 0.8
+
+checkpoint:
+  path: checkpoints/gpt-2/train.pt
+  save_every: 1000
+
+hydra:
+  job:
+    chdir: false               # keep cwd at repo root so relative paths resolve
+  run:
+    dir: outputs/${name}/${now:%Y-%m-%d_%H-%M-%S}

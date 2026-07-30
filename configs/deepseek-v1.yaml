@@ -1,0 +1,67 @@
+# DeepSeek-V1 style: MHA + RoPE + MoE
+# Same backbone and training budget as gpt-2. d_ff is halved so that top_k=2
+# experts cost the same FLOPs as gpt-2's one dense FFN -- the capacity gain is
+# free, which is the whole MoE claim.
+# Run with: python train.py --config-name deepseek-v1
+
+name: deepseek-v1
+
+seed: 1337
+device: auto        # auto | cuda | cpu
+compile: false      # keep false across all three so wall-clock stays comparable
+
+data:
+  dataset_name: tiny_shakesphere
+  corpus_path: ./data/_data/tiny_shakesphere.txt
+  test_split: 0.05             # 5/5 split leaves 90% (~394K tokens) for training
+  val_split: 0.05
+
+tokenizer:
+  path: ./data/_data/tokenizer/tiny_shakesphere/
+  vocab_size: 1000
+  min_occurrences: 10
+
+model:
+  _target_: models.deepseek_v1.DeepSeek
+  d_in: 192
+  max_seq_length: 256          # context limit -- sizes the RoPE tables and causal mask
+  d_transformer: 192
+  n_blocks: 6
+  transformer_n_heads: 6       # head_dim = 32, must be even for RoPE
+  num_experts: 8
+  top_k: 2
+  d_ff: 384                    # 2 * d_in: top_k=2 of these == gpt-2's 4*d_in dense FFN
+  dropout: 0.2
+  gamma: 0.001                 # aux-loss-free bias step size
+
+optimizer:
+  _target_: torch.optim.AdamW
+  weight_decay: 0.1
+  betas: [0.9, 0.95]           # lr comes from training.lr_peak
+
+training:
+  n_steps: 3000
+  batch_size: 32
+  seq_len: 256                 # must be <= model.max_seq_length
+  lr_peak: 1e-3
+  lr_min: 1e-4
+  warmup_steps: 100
+  grad_clip: 1.0
+
+eval:
+  log_every: 100
+  eval_every: 100              # frequent -- best val lands well before step 3000
+  eval_steps: 40
+  prompt: "First Citizen:\nBefore we proceed"
+  max_new_tokens: 100
+  temperature: 0.8
+
+checkpoint:
+  path: checkpoints/deepseek-v1/train.pt
+  save_every: 1000
+
+hydra:
+  job:
+    chdir: false               # keep cwd at repo root so relative paths resolve
+  run:
+    dir: outputs/${name}/${now:%Y-%m-%d_%H-%M-%S}

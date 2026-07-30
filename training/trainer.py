@@ -65,6 +65,9 @@ class Trainer:
         tokenizer=None,
         prompt_text=None,
         max_new_tokens=80,
+        temperature=0.8,
+        # --- run config, stored in the checkpoint so it can rebuild the model ---
+        config=None,
     ):
         self.model            = model
         self.dataset          = dataset
@@ -85,6 +88,8 @@ class Trainer:
         self.tokenizer        = tokenizer
         self.prompt_text      = prompt_text
         self.max_new_tokens   = max_new_tokens
+        self.temperature      = temperature
+        self.config           = config
 
         # running stats
         self.step             = 0
@@ -220,7 +225,7 @@ class Trainer:
             sampled_ids = self._generate(
                 self.prompt_ids,
                 max_new_tokens=self.max_new_tokens,
-                temperature=0.8,
+                temperature=self.temperature,
                 greedy=False,
             )
             sample_time = time.time() - t0
@@ -302,11 +307,15 @@ class Trainer:
         Save model + optimizer + scheduler state.
         Saving scheduler state is required for correct LR on resume --
         without it, loading a checkpoint restarts the schedule from step 0.
+
+        The run config goes in too, so sample.py can rebuild the exact model
+        from the checkpoint instead of duplicating hyperparameters by hand.
         """
         os.makedirs(os.path.dirname(self.checkpoint_path), exist_ok=True)
         torch.save(
             {
                 "step":                  self.step,
+                "config":                self.config,
                 "model_state_dict":      self.model.state_dict(),
                 "optimizer_state_dict":  self.optimizer.state_dict(),
                 "scheduler_state_dict":  self.scheduler.state_dict(),

@@ -3,17 +3,17 @@ from models.blocks.mha_transformer import MHATransformer
 from models.embeddings.sin_embedding import SinosoidalPositionalEmbedding
 
 class GPT2(torch.nn.Module):
-    def __init__(self, vocab_size, d_in, max_seq_length, d_transformer, n_blocks, transformer_n_heads):
+    def __init__(self, vocab_size, d_in, max_seq_length, d_transformer, n_blocks, transformer_n_heads, d_ff=None, dropout=0.2):
         super().__init__()
 
         self.d_in = d_in
 
-        self.input_embedding = torch.nn.Embedding(vocab_size, d_in)  
+        self.input_embedding = torch.nn.Embedding(vocab_size, d_in)
         self.pos_embedding = SinosoidalPositionalEmbedding(max_seq_length, d_in)
 
         self.n_blocks = n_blocks
         self.transformer_blocks = torch.nn.ModuleList([
-            MHATransformer(self.d_in, d_transformer, transformer_n_heads)
+            MHATransformer(self.d_in, d_transformer, transformer_n_heads, d_ff, dropout)
             for _ in range(n_blocks)
         ])
 

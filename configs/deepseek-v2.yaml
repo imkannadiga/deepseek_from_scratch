@@ -1,0 +1,68 @@
+# DeepSeek-V2 style: MLA with split-head RoPE + MoE + aux-loss-free load balancing
+# Identical to deepseek-v1 except MHA -> MLA. MLA is a memory win, not a quality
+# win: expect val loss to land on top of v1 while the KV cache drops 6.4x.
+# Run with: python train.py --config-name deepseek-v2
+
+name: deepseek-v2
+
+seed: 1337
+device: auto        # auto | cuda | cpu
+compile: false      # keep false across all three so wall-clock stays comparable
+
+data:
+  dataset_name: tiny_shakesphere
+  corpus_path: ./data/_data/tiny_shakesphere.txt
+  test_split: 0.05             # 5/5 split leaves 90% (~394K tokens) for training
+  val_split: 0.05
+
+tokenizer:
+  path: ./data/_data/tokenizer/tiny_shakesphere/
+  vocab_size: 1000
+  min_occurrences: 10
+
+model:
+  _target_: models.deepseek_v2.DeepSeek
+  d_in: 192
+  d_kv: 48                     # compressed KV latent, d_in/4 -- what MLA caches
+  max_seq_length: 256          # context limit -- sizes the RoPE tables and causal mask
+  d_transformer: 192
+  n_blocks: 6
+  transformer_n_heads: 6       # head_dim = 32
+  rope_head_dim: 16            # head_dim/2, matching the paper's ratio; must be even
+  num_experts: 8
+  top_k: 2
+  d_ff: 384                    # same MoE as deepseek-v1 so only attention differs
+  dropout: 0.2
+  gamma: 0.001                 # aux-loss-free bias step size
+
+optimizer:
+  _target_: torch.optim.AdamW
+  weight_decay: 0.1
+  betas: [0.9, 0.95]           # lr comes from training.lr_peak
+
+training:
+  n_steps: 3000
+  batch_size: 32
+  seq_len: 256                 # must be <= model.max_seq_length
+  lr_peak: 1e-3
+  lr_min: 1e-4
+  warmup_steps: 100
+  grad_clip: 1.0
+
+eval:
+  log_every: 100
+  eval_every: 100              # frequent -- best val lands well before step 3000
+  eval_steps: 40
+  prompt: "First Citizen:\nBefore we proceed"
+  max_new_tokens: 100
+  temperature: 0.8
+
+checkpoint:
+  path: checkpoints/deepseek-v2/train.pt
+  save_every: 1000
+
+hydra:
+  job:
+    chdir: false               # keep cwd at repo root so relative paths resolve
+  run:
+    dir: outputs/${name}/${now:%Y-%m-%d_%H-%M-%S}

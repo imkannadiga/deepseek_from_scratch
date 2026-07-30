@@ -1,176 +1,171 @@
 """
 train.py
 
-Simple end-to-end training entry point with hardcoded configs.
+Simple end-to-end training entry point driven by Hydra.
 Wires together: tokenizer -> dataset -> model -> optimizer -> trainer.
 
 Usage:
-    python train.py
+    python train.py                                  # defaults to deepseek-v2
+    python train.py --config-name gpt-2
+    python train.py --config-name deepseek-v1
+    python train.py --config-name deepseek-v2 training.n_steps=1000 compile=false
 """
-
-import torch
-from tokenizer.bpe_tokenizer import BPETokenizer
-from data.shakesphere import ShakespeareDataset
-from models.deepseek import DeepSeek
-from training.trainer import Trainer
-from torch.optim.lr_scheduler import LinearLR
-
-# ---------------------------------------------------------------
-# Config -- all hardcoded for now, swap for yaml/dataclass later
-# ---------------------------------------------------------------
-
-# data
-CORPUS_PATH   = "./data/_data/tiny_shakesphere.txt"
-TOKENIZER_PATH = "./data/_data/tokenizer/tiny_shakesphere/"
-VOCAB_SIZE    = 1000
-MIN_FREQ      = 5
-
-# model
-D_IN          = 32
-N_BLOCKS      = 2
-N_HEADS       = 4
-MAX_SEQ_LEN   = 256 # CONTEXT SIZE
-
-# training
-SEQ_LEN       = 128
-BATCH_SIZE    = 1024
-N_STEPS       = 50000
-LR_PEAK = 3e-4
-LR_MIN  = 3e-5
-
-# logging / checkpointing
-LOG_EVERY     = 500
-EVAL_EVERY    = 2000
-EVAL_STEPS    = 100
-SAVE_EVERY    = 10000
-CKPT_PATH     = "checkpoints/gpt2_atch/train.pt"
-
-DEVICE        = "cuda" if torch.cuda.is_available() else "cpu"
-
-PROMPT = "First Citizen:\nBefore we proceed"
-
-# ---------------------------------------------------------------
-# Step 1: tokenizer
-# ---------------------------------------------------------------
-print("=" * 60)
-print("STEP 1: Training tokenizer")
-print("=" * 60)
 
 import time
 
-with open(CORPUS_PATH, "r", encoding="utf-8") as f:
-    raw_text = f.read()
+import hydra
+import torch
+from hydra.utils import instantiate
+from omegaconf import DictConfig, OmegaConf
 
-print(f"Corpus: {len(raw_text):,} characters")
-
-tokenizer = BPETokenizer()
-t0 = time.time()
-tokenizer.load_or_train('tiny_shakesphere',TOKENIZER_PATH,raw_text, vocab_size=VOCAB_SIZE, min_occurrences=MIN_FREQ)
-print(f"Tokenizer trained in {time.time() - t0:.1f}s")
-print(f"Actual vocab size: {len(tokenizer.vocab)}")
-print()
+from tokenizer.bpe_tokenizer import BPETokenizer
+from data.shakesphere import ShakespeareDataset
+from training.trainer import Trainer
 
 
-# ---------------------------------------------------------------
-# Step 2: dataset
-# ---------------------------------------------------------------
-print("=" * 60)
-print("STEP 2: Building dataset")
-print("=" * 60)
+@hydra.main(version_base=None, config_path="configs", config_name="deepseek-v2")
+def main(cfg: DictConfig):
+    print(OmegaConf.to_yaml(cfg))
 
-dataset = ShakespeareDataset(
-    path=CORPUS_PATH,
-    tokenizer=tokenizer,
-    test_split=0.2,
-    val_split=0.1,
-    device=DEVICE,
-)
-print()
+    torch.manual_seed(cfg.seed)
 
-# quick batch shape check before committing to training
-x, y = dataset.get_batch("train", batch_size=2, seq_len=8)
-assert x.shape == (2, 8), f"Unexpected input shape: {x.shape}"
-assert y.shape == (2, 8), f"Unexpected target shape: {y.shape}"
-assert (x[:, 1:] == y[:, :-1]).all(), "Shift relationship broken"
-print("Batch shape check: PASS")
-print()
+    device = cfg.device
+    if device == "auto":
+        device = "cuda" if torch.cuda.is_available() else "cpu"
 
-# ---------------------------------------------------------------
-# Step 3: model
-# ---------------------------------------------------------------
-print("=" * 60)
-print("STEP 3: Building model")
-print("=" * 60)
+    # ---------------------------------------------------------------
+    # Step 1: tokenizer
+    # ---------------------------------------------------------------
+    print("=" * 60)
+    print("STEP 1: Training tokenizer")
+    print("=" * 60)
 
-# vocab_size comes FROM the tokenizer -- never hardcode this
-# separately from the actual tokenizer output or you risk a mismatch
-vocab_size = len(tokenizer.vocab)
+    with open(cfg.data.corpus_path, "r", encoding="utf-8") as f:
+        raw_text = f.read()
 
-model = DeepSeek(
-    vocab_size=vocab_size,
-    d_in=D_IN,
-    d_kv = D_IN // 2,
-    max_seq_length=MAX_SEQ_LEN,
-    d_transformer=D_IN,
-    n_blocks=N_BLOCKS,
-    transformer_n_heads=N_HEADS,
-).to(DEVICE)
+    print(f"Corpus: {len(raw_text):,} characters")
 
-n_params = sum(p.numel() for p in model.parameters())
-print(f"Model parameters: {n_params:,}")
-print(f"Device: {DEVICE}")
+    tokenizer = BPETokenizer()
+    t0 = time.time()
+    tokenizer.load_or_train(
+        cfg.data.dataset_name,
+        cfg.tokenizer.path,
+        raw_text,
+        vocab_size=cfg.tokenizer.vocab_size,
+        min_occurrences=cfg.tokenizer.min_occurrences,
+    )
+    print(f"Tokenizer trained in {time.time() - t0:.1f}s")
+    print(f"Actual vocab size: {len(tokenizer.vocab)}")
+    print()
 
-# one forward pass to confirm shapes before training
-with torch.no_grad():
-    test_x, _ = dataset.get_batch("train", batch_size=2, seq_len=SEQ_LEN)
-    test_logits = model(test_x)
-    assert test_logits.shape == (2, SEQ_LEN, vocab_size), \
-        f"Unexpected logits shape: {test_logits.shape}"
-    print(f"Model forward pass shape check: PASS {tuple(test_logits.shape)}")
-print()
+    # ---------------------------------------------------------------
+    # Step 2: dataset
+    # ---------------------------------------------------------------
+    print("=" * 60)
+    print("STEP 2: Building dataset")
+    print("=" * 60)
+
+    dataset = ShakespeareDataset(
+        path=cfg.data.corpus_path,
+        tokenizer=tokenizer,
+        test_split=cfg.data.test_split,
+        val_split=cfg.data.val_split,
+        device=device,
+    )
+    print()
+
+    # quick batch shape check before committing to training
+    x, y = dataset.get_batch("train", batch_size=2, seq_len=8)
+    assert x.shape == (2, 8), f"Unexpected input shape: {x.shape}"
+    assert y.shape == (2, 8), f"Unexpected target shape: {y.shape}"
+    assert (x[:, 1:] == y[:, :-1]).all(), "Shift relationship broken"
+    print("Batch shape check: PASS")
+    print()
+
+    # ---------------------------------------------------------------
+    # Step 3: model
+    # ---------------------------------------------------------------
+    print("=" * 60)
+    print("STEP 3: Building model")
+    print("=" * 60)
+
+    assert cfg.training.seq_len <= cfg.model.max_seq_length, \
+        f"seq_len {cfg.training.seq_len} exceeds max_seq_length {cfg.model.max_seq_length}"
+
+    # vocab_size comes FROM the tokenizer -- never hardcode this in the config
+    # separately from the actual tokenizer output or you risk a mismatch
+    vocab_size = len(tokenizer.vocab)
+
+    # _target_ in the config picks the model class, so swapping architectures
+    # is a config change and never a code change here
+    model = instantiate(cfg.model, vocab_size=vocab_size).to(device)
+
+    n_params = sum(p.numel() for p in model.parameters())
+    print(f"Model: {cfg.model._target_}")
+    print(f"Model parameters: {n_params:,}")
+    print(f"Device: {device}")
+
+    # one forward pass to confirm shapes before training
+    with torch.no_grad():
+        test_x, _ = dataset.get_batch("train", batch_size=2, seq_len=cfg.training.seq_len)
+        test_logits = model(test_x)
+        assert test_logits.shape == (2, cfg.training.seq_len, vocab_size), \
+            f"Unexpected logits shape: {test_logits.shape}"
+        print(f"Model forward pass shape check: PASS {tuple(test_logits.shape)}")
+    print()
+
+    # ---------------------------------------------------------------
+    # Step 4: optimizer
+    # ---------------------------------------------------------------
+    print("=" * 60)
+    print("STEP 4: Building optimizer")
+    print("=" * 60)
+
+    optimizer = instantiate(
+        cfg.optimizer,
+        params=model.parameters(),
+        lr=cfg.training.lr_peak,
+    )
+    print(f"{type(optimizer).__name__} optimizer, lr_peak={cfg.training.lr_peak}")
+    print()
+
+    if cfg.compile:
+        print("Compiling model.....")
+        model = torch.compile(model)
+
+    # ---------------------------------------------------------------
+    # Step 5: train
+    # ---------------------------------------------------------------
+    print("=" * 60)
+    print("STEP 5: Training")
+    print("=" * 60)
+
+    trainer = Trainer(
+        model=model,
+        dataset=dataset,
+        optimizer=optimizer,
+        n_steps=cfg.training.n_steps,
+        batch_size=cfg.training.batch_size,
+        seq_len=cfg.training.seq_len,
+        device=device,
+        lr_peak=cfg.training.lr_peak,
+        lr_min=cfg.training.lr_min,
+        warmup_steps=cfg.training.warmup_steps,
+        log_every=cfg.eval.log_every,
+        eval_every=cfg.eval.eval_every,
+        eval_steps=cfg.eval.eval_steps,
+        save_every=cfg.checkpoint.save_every,
+        checkpoint_path=cfg.checkpoint.path,
+        grad_clip=cfg.training.grad_clip,
+        tokenizer=tokenizer,
+        prompt_text=cfg.eval.prompt,
+        max_new_tokens=cfg.eval.max_new_tokens,
+        temperature=cfg.eval.temperature,
+        config=OmegaConf.to_container(cfg, resolve=True),
+    )
+
+    trainer.train()
 
 
-# ---------------------------------------------------------------
-# Step 4: optimizer
-# ---------------------------------------------------------------
-print("=" * 60)
-print("STEP 4: Building optimizer")
-print("=" * 60)
-
-optimizer = torch.optim.AdamW(model.parameters(), lr=LR_PEAK, weight_decay=0.1)
-print(f"AdamW optimizer, lr_peak={LR_PEAK}")
-print()
-
-print("Compiling model.....")
-model = torch.compile(model)
-
-# ---------------------------------------------------------------
-# Step 5: train
-# ---------------------------------------------------------------
-print("=" * 60)
-print("STEP 5: Training")
-print("=" * 60)
-
-trainer = Trainer(
-    model=model,
-    dataset=dataset,
-    optimizer=optimizer,
-    n_steps=N_STEPS,
-    batch_size=BATCH_SIZE,
-    seq_len=SEQ_LEN,
-    device=DEVICE,
-    lr_peak=LR_PEAK,
-    lr_min=LR_MIN,
-    warmup_steps=200,
-    log_every=LOG_EVERY,
-    eval_every=EVAL_EVERY,
-    eval_steps=EVAL_STEPS,
-    save_every=SAVE_EVERY,
-    checkpoint_path=CKPT_PATH,
-    grad_clip=1.0,
-    tokenizer=tokenizer,
-    prompt_text=PROMPT,
-    max_new_tokens=100,
-)
-
-trainer.train()
+if __name__ == "__main__":
+    main()
