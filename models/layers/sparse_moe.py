@@ -3,13 +3,13 @@ from models.layers.top_k_router import TopKRouter
 from models.layers.expert import Expert
 
 class MoE(torch.nn.Module):
-    def __init__(self, embed_dim, n_experts, top_k, gamma=0.001):
+    def __init__(self, embed_dim, n_experts, top_k, d_ff=None, dropout=0.1, gamma=0.001):
         super().__init__()
 
         self.router = TopKRouter(embed_dim, n_experts, top_k)
         self.n_experts = n_experts
         self.gamma = gamma
-        self.experts = torch.nn.ModuleList([*[Expert(embed_dim=embed_dim) for _ in range(n_experts)]])
+        self.experts = torch.nn.ModuleList([Expert(embed_dim, d_ff, dropout) for _ in range(n_experts)])
 
     def forward(self, x):
         
@@ -35,7 +35,9 @@ class MoE(torch.nn.Module):
 
             final_output[expert_mask] += expert_weights * expert_output
 
-        self._update_bias(expert_counts)
+        # Load balancing is a training-time nudge only -- never drift the bias on eval batches
+        if self.training:
+            self._update_bias(expert_counts)
 
         return final_output.view(B, T, embed_dim)
 

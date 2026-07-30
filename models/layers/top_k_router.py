@@ -1,17 +1,19 @@
 import torch
 
 class TopKRouter(torch.nn.Module):
-    def __init__(self, n_embed, n_experts, top_k, gamma=0.0001):
+    def __init__(self, n_embed, n_experts, top_k):
         super().__init__()
 
         self.top_k = top_k
         self.router = torch.nn.Linear(n_embed, n_experts)
 
         self.register_buffer("bias", torch.zeros(n_experts))
-        
+
     def forward(self, x):
 
         routing_matrix = self.router(x)
+
+        # Bias steers selection only -- the gate values stay unbiased
         biased_logits = routing_matrix + self.bias
 
         _, top_k_posn = biased_logits.topk(self.top_k, dim=-1) 
