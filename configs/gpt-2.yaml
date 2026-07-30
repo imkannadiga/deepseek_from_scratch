@@ -17,13 +17,13 @@ data:
 
 tokenizer:
   path: ./data/_data/tokenizer/tiny_shakesphere/
-  vocab_size: 1000
+  vocab_size: 5000
   min_occurrences: 10
 
 model:
   _target_: models.gpt_v2.GPT2
   d_in: 192
-  max_seq_length: 256          # context limit -- sizes the positional embedding
+  max_seq_length: 512          # context limit -- sizes the positional embedding
   d_transformer: 192
   n_blocks: 6
   transformer_n_heads: 6       # head_dim = 32
@@ -36,18 +36,18 @@ optimizer:
   betas: [0.9, 0.95]           # lr comes from training.lr_peak
 
 training:
-  n_steps: 3000
-  batch_size: 32
-  seq_len: 256                 # must be <= model.max_seq_length
-  lr_peak: 1e-3
-  lr_min: 1e-4
+  n_steps: 10000
+  batch_size: 256
+  seq_len: 512                 # must be <= model.max_seq_length
+  lr_peak: 3e-4
+  lr_min: 3e-6
   warmup_steps: 100
   grad_clip: 1.0
 
 eval:
-  log_every: 100
-  eval_every: 100              # frequent -- best val lands well before step 3000
-  eval_steps: 40
+  log_every: 500
+  eval_every: 1000              # frequent -- best val lands well before step 3000
+  eval_steps: 50
   prompt: "First Citizen:\nBefore we proceed"
   max_new_tokens: 100
   temperature: 0.8
