@@ -22,12 +22,12 @@ tokenizer:
 
 model:
   _target_: models.gpt_v2.GPT2
-  d_in: 192
+  d_in: 32
   max_seq_length: 512          # context limit -- sizes the positional embedding
-  d_transformer: 192
-  n_blocks: 6
-  transformer_n_heads: 6       # head_dim = 32
-  d_ff: 768                    # 4 * d_in, the standard dense FFN
+  d_transformer: 32
+  n_blocks: 4
+  transformer_n_heads: 4       # head_dim = 32
+  d_ff: 256                    # 4 * d_in, the standard dense FFN
   dropout: 0.2                 # essential -- 3M params on ~394K tokens
 
 optimizer:
