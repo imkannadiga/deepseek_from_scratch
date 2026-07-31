@@ -136,7 +136,7 @@ class BPETokenizer:
             pickle.dump(state, f, pickle.HIGHEST_PROTOCOL)
 
     def load_or_train(self, dataset_name, tok_path, corpus_text, vocab_size, min_occurrences=1):
-        sha = sha256(f'{dataset_name}_{vocab_size}_{corpus_text[:100]}'.encode()).hexdigest()
+        sha = sha256(f'{dataset_name}_{vocab_size}_{min_occurrences}_{corpus_text[:100]}'.encode()).hexdigest()
 
         # Reuse a stored tokenizer only if it was trained on the same config/corpus.
         if tok_path is not None and os.path.exists(self._state_file(tok_path)):

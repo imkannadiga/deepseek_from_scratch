@@ -16,8 +16,8 @@ data:
   val_split: 0.05
 
 tokenizer:
-  path: ./data/_data/tokenizer/tiny_shakesphere/
-  vocab_size: 5000
+  path: ./data/_data/tokenizer/tiny_shakesphere-v${tokenizer.vocab_size}/
+  vocab_size: 50000
   min_occurrences: 10
 
 model:
@@ -26,9 +26,9 @@ model:
   max_seq_length: 512          # context limit -- sizes the positional embedding
   d_transformer: 32
   n_blocks: 4
-  transformer_n_heads: 4       # head_dim = 32
-  d_ff: 256                    # 4 * d_in, the standard dense FFN
-  dropout: 0.2                 # essential -- 3M params on ~394K tokens
+  transformer_n_heads: 4       # head_dim = 8
+  d_ff: 256                    # 8 * d_in
+  dropout: 0.2
 
 optimizer:
   _target_: torch.optim.AdamW
@@ -46,7 +46,7 @@ training:
 
 eval:
   log_every: 500
-  eval_every: 1000              # frequent -- best val lands well before step 3000
+  eval_every: 1000
   eval_steps: 50
   prompt: "First Citizen:\nBefore we proceed"
   max_new_tokens: 100
