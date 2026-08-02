@@ -157,6 +157,7 @@ def main(cfg: DictConfig):
         save_every=cfg.checkpoint.save_every,
         checkpoint_path=cfg.checkpoint.path,
         grad_clip=cfg.training.grad_clip,
+        aux_alpha=cfg.training.get("aux_alpha", 0.01),
         tokenizer=tokenizer,
         prompt_text=cfg.eval.prompt,
         max_new_tokens=cfg.eval.max_new_tokens,

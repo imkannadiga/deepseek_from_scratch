@@ -18,6 +18,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from models.layers.sparse_moe import collect_aux_loss
+
 
 def _lr_multiplier(step, warmup_steps, n_steps, lr_min, lr_peak):
     """
@@ -61,6 +63,8 @@ class Trainer:
         checkpoint_path="checkpoints/ckpt.pt",
         # --- gradient clipping ---
         grad_clip=1.0,
+        # --- weight on the MoE balance loss, ignored by aux-loss-free models ---
+        aux_alpha=0.01,
         # --- generation ---
         tokenizer=None,
         prompt_text=None,
@@ -85,6 +89,7 @@ class Trainer:
         self.save_every       = save_every
         self.checkpoint_path  = checkpoint_path
         self.grad_clip        = grad_clip
+        self.aux_alpha        = aux_alpha
         self.tokenizer        = tokenizer
         self.prompt_text      = prompt_text
         self.max_new_tokens   = max_new_tokens
@@ -138,14 +143,17 @@ class Trainer:
             y : LongTensor (B, T)  -- target token ids (x shifted by 1)
 
         Returns:
-            loss : scalar tensor
+            ce  : scalar tensor -- cross-entropy, the number worth comparing
+                  across architectures
+            aux : scalar tensor or None -- summed MoE balance loss, present only
+                  while training a model that balances with an auxiliary loss
         """
         logits = self.model(x)                        # (B, T, vocab_size)
         B, T, vocab_size = logits.shape
         logits = logits.view(B * T, vocab_size)       # (B*T, vocab_size)
         y = y.view(B * T)                             # (B*T,)
 
-        return F.cross_entropy(logits, y)
+        return F.cross_entropy(logits, y), collect_aux_loss(self.model)
         
 
 
@@ -166,7 +174,11 @@ class Trainer:
 
         self.optimizer.zero_grad()
 
-        loss = self._forward_and_loss(x, y)
+        ce, aux = self._forward_and_loss(x, y)
+
+        # The balance loss trains the router toward even expert load. It is kept
+        # out of the reported number so aux-loss and aux-loss-free models compare
+        loss = ce if aux is None else ce + self.aux_alpha * aux
         loss.backward()
 
         if self.grad_clip is not None:
@@ -176,7 +188,7 @@ class Trainer:
         self.scheduler.step()   # must come AFTER optimizer.step()
                                 # updates LR for the NEXT step
 
-        return loss.item()
+        return ce.item()
 
 
     # ------------------------------------------------------------------
@@ -195,7 +207,7 @@ class Trainer:
 
         for _ in range(self.eval_steps):
             x, y = self.dataset.get_batch(split, self.batch_size, self.seq_len)
-            total_loss = self._forward_and_loss(x, y)
+            total_loss, _ = self._forward_and_loss(x, y)
             total_losses.append(total_loss.item())
         mean_loss = sum(total_losses) / len(total_losses)
 

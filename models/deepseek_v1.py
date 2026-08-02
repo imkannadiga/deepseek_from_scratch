@@ -2,7 +2,11 @@ import torch
 from models.blocks.rope_mha_transformer import RopeMHATransformer
 
 class DeepSeek(torch.nn.Module):
-    def __init__(self, vocab_size, d_in, max_seq_length, d_transformer, n_blocks, transformer_n_heads, num_experts=4, top_k=2, d_ff=None, dropout=0.2, gamma=0.001):
+    # MHA + RoPE + a plain top-k MoE: one expert size, no shared experts.
+    def __init__(self, vocab_size, d_in, max_seq_length, d_transformer, n_blocks, transformer_n_heads,
+                 n_experts_routed=8, top_k_routed=2, d_ff_routed=None,
+                 n_experts_shared=0, d_ff_shared=None,
+                 moe_loss="aux", gate="softmax", gamma=0.001, dropout=0.2):
         super().__init__()
 
         self.d_in = d_in
@@ -12,7 +16,9 @@ class DeepSeek(torch.nn.Module):
         self.n_blocks = n_blocks
         self.transformer_blocks = torch.nn.ModuleList([
             RopeMHATransformer(self.d_in, d_transformer, transformer_n_heads, max_seq_length, dropout,
-                               num_experts=num_experts, top_k=top_k, d_ff=d_ff, gamma=gamma)
+                               n_experts_routed, top_k_routed, d_ff_routed,
+                               n_experts_shared, d_ff_shared,
+                               moe_loss, gate, gamma)
             for _ in range(n_blocks)
         ])
 

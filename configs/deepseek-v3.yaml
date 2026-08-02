@@ -1,14 +1,14 @@
-# DeepSeek-V2 style: MLA + DeepSeekMoE, balanced with the standard auxiliary loss.
-# Two changes from deepseek-v1: MHA -> MLA (a memory win, ~3x smaller KV cache,
-# not a quality win), and plain MoE -> DeepSeekMoE (fine-grained experts + a
-# shared expert). Balancing still costs an auxiliary loss term; V3 removes that.
-# Run with: python train.py --config-name deepseek-v2
+# DeepSeek-V3 style: same MLA + DeepSeekMoE as v2, balanced without any loss term.
+# The only differences from deepseek-v2 are moe_loss and gate: the router scores
+# experts with a sigmoid and a per-expert bias is nudged toward even load, so the
+# objective stays pure cross-entropy. Multi-token prediction is not implemented.
+# Run with: python train.py --config-name deepseek-v3
 
-name: deepseek-v2
+name: deepseek-v3
 
 seed: 1337
 device: auto        # auto | cuda | cpu
-compile: false      # keep false across all three so wall-clock stays comparable
+compile: false      # keep false across all four so wall-clock stays comparable
 
 data:
   dataset_name: tiny_shakesphere
@@ -22,7 +22,7 @@ tokenizer:
   min_occurrences: 10
 
 model:
-  _target_: models.deepseek_v2.DeepSeek
+  _target_: models.deepseek_v3.DeepSeek
   d_in: 32
   d_kv: 16                     # compressed KV latent, d_in/2 -- what MLA caches
   max_seq_length: 512          # context limit -- sizes the RoPE tables and causal mask
@@ -35,9 +35,9 @@ model:
   d_ff_routed: 32              # 1 shared (64) + 6 routed (6*32) = gpt-2's 256
   n_experts_shared: 1          # shared expert isolation: always on, never routed
   d_ff_shared: 64
-  moe_loss: aux
-  gate: softmax
-  gamma: 0.001                 # unused while moe_loss is "aux"
+  moe_loss: free               # <- NEW vs v2: no auxiliary loss at all
+  gate: sigmoid                # <- NEW vs v2: sigmoid affinity, normalised top-k
+  gamma: 0.001                 # bias step size, the whole balancing mechanism
   dropout: 0.2
 
 optimizer:
@@ -53,7 +53,7 @@ training:
   lr_min: 3e-6
   warmup_steps: 100
   grad_clip: 1.0
-  aux_alpha: 0.01              # weight on the MoE balance loss
+  aux_alpha: 0.01              # unused -- this model produces no balance loss
 
 eval:
   log_every: 500
@@ -64,7 +64,7 @@ eval:
   temperature: 0.8
 
 checkpoint:
-  path: checkpoints/deepseek-v2/train.pt
+  path: checkpoints/deepseek-v3/train.pt
   save_every: 1000
 
 hydra:

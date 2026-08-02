@@ -2,7 +2,13 @@ import torch
 from models.blocks.rope_mla_transformer import RopeMLATransformer
 
 class DeepSeek(torch.nn.Module):
-    def __init__(self, vocab_size, d_in, d_kv, max_seq_length, d_transformer, n_blocks, transformer_n_heads, rope_head_dim=16, num_experts=4, top_k=2, d_ff=None, dropout=0.2, gamma=0.001):
+    # MLA + DeepSeekMoE (fine-grained experts + shared expert isolation),
+    # balanced with the standard auxiliary loss.
+    def __init__(self, vocab_size, d_in, d_kv, max_seq_length, d_transformer, n_blocks, transformer_n_heads,
+                 rope_head_dim=16,
+                 n_experts_routed=16, top_k_routed=6, d_ff_routed=None,
+                 n_experts_shared=1, d_ff_shared=None,
+                 moe_loss="aux", gate="softmax", gamma=0.001, dropout=0.2):
         super().__init__()
 
         self.d_in = d_in
@@ -14,7 +20,9 @@ class DeepSeek(torch.nn.Module):
         self.transformer_blocks = torch.nn.ModuleList([
             RopeMLATransformer(self.d_in, self.d_kv, d_transformer, transformer_n_heads,
                                rope_head_dim, max_seq_length, dropout,
-                               num_experts=num_experts, top_k=top_k, d_ff=d_ff, gamma=gamma)
+                               n_experts_routed, top_k_routed, d_ff_routed,
+                               n_experts_shared, d_ff_shared,
+                               moe_loss, gate, gamma)
             for _ in range(n_blocks)
         ])
 

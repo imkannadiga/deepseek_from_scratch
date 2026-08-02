@@ -20,7 +20,7 @@ class RopelessMLATransformer(nn.Module):
 
         self.ln_2 = nn.LayerNorm(d_in)
 
-        self.MoE = MoE(self.d_model, num_experts, top_k)
+        self.MoE = MoE(num_experts, None, top_k, 0, self.d_model, None, dropout_p)
 
     def forward(self, x):
         B, n_tokens, d_in = x.shape

@@ -28,11 +28,15 @@ model:
   d_transformer: 32
   n_blocks: 4
   transformer_n_heads: 4       # head_dim = 8, must be even for RoPE
-  num_experts: 8
-  top_k: 2
-  d_ff: 128                    # gpt-2's d_ff / top_k, so active FLOPs match gpt-2
+  n_experts_routed: 8          # plain MoE: one expert size, no sharing
+  top_k_routed: 2
+  d_ff_routed: 128             # top_k * d_ff_routed = gpt-2's 256 dense FFN
+  n_experts_shared: 0
+  d_ff_shared: 0
+  moe_loss: aux                # standard auxiliary balance loss
+  gate: softmax
+  gamma: 0.001                 # unused while moe_loss is "aux"
   dropout: 0.2
-  gamma: 0.001                 # aux-loss-free bias step size
 
 optimizer:
   _target_: torch.optim.AdamW
@@ -47,6 +51,7 @@ training:
   lr_min: 3e-6
   warmup_steps: 100
   grad_clip: 1.0
+  aux_alpha: 0.01              # weight on the MoE balance loss
 
 eval:
   log_every: 500
