@@ -23,18 +23,18 @@ tokenizer:
 
 model:
   _target_: models.deepseek_v2.DeepSeek
-  d_in: 64
-  d_kv: 32                     # compressed KV latent, d_in/2 -- what MLA caches
+  d_in: 384
+  d_kv: 192                    # compressed KV latent, d_in/2 -- what MLA caches
   max_seq_length: 512          # context limit -- sizes the RoPE tables and causal mask
-  d_transformer: 64
-  n_blocks: 4
-  transformer_n_heads: 8       # head_dim = 8
-  rope_head_dim: 4             # head_dim/2, matching the paper's ratio; must be even
-  n_experts_routed: 12         # v1's 8 experts split 2-way into 16, one isolated as shared
-  top_k_routed: 3
-  d_ff_routed: 128              # 16*64 total and 4*64 active both match v1's 8*128 / 2*128
-  n_experts_shared: 4          # shared expert isolation: always on, never routed
-  d_ff_shared: 128
+  d_transformer: 384
+  n_blocks: 6
+  transformer_n_heads: 6       # head_dim = 64
+  rope_head_dim: 32            # head_dim/2, matching the paper's ratio; must be even
+  n_experts_routed: 8         # v1's 8 experts split 2-way into 16, one isolated as shared
+  top_k_routed: 2
+  d_ff_routed: 384             # 16*768 total and 4*768 active both match v1's 8*1536 / 2*1536
+  n_experts_shared: 1          # shared expert isolation: always on, never routed
+  d_ff_shared: 384
   moe_loss: aux
   gate: softmax
   gamma: 0.001                 # unused while moe_loss is "aux"

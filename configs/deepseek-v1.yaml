@@ -23,14 +23,14 @@ tokenizer:
 
 model:
   _target_: models.deepseek_v1.DeepSeek
-  d_in: 64
+  d_in: 384
   max_seq_length: 512          # context limit -- sizes the RoPE tables and causal mask
-  d_transformer: 64
-  n_blocks: 4
-  transformer_n_heads: 8       # head_dim = 8, must be even for RoPE
-  n_experts_routed: 16          # plain MoE: one expert size, no sharing
-  top_k_routed: 4
-  d_ff_routed: 128 
+  d_transformer: 384
+  n_blocks: 6
+  transformer_n_heads: 6       # head_dim = 64, must be even for RoPE
+  n_experts_routed: 8          # plain MoE: one expert size, no sharing
+  top_k_routed: 2
+  d_ff_routed: 384            # full-size expert, same width as gpt-2's dense FFN
   n_experts_shared: 0
   d_ff_shared: 0
   moe_loss: aux                # standard auxiliary balance loss
