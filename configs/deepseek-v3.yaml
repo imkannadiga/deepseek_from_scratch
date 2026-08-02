@@ -1,7 +1,8 @@
-# DeepSeek-V3 style: same MLA + DeepSeekMoE as v2, balanced without any loss term.
-# The only differences from deepseek-v2 are moe_loss and gate: the router scores
-# experts with a sigmoid and a per-expert bias is nudged toward even load, so the
-# objective stays pure cross-entropy. Multi-token prediction is not implemented.
+# DeepSeek-V3 style: same MLA + DeepSeekMoE as v2, plus both V3 additions.
+# Differences from deepseek-v2: moe_loss/gate (the router scores experts with a
+# sigmoid and a per-expert bias is nudged toward even load, so no balance loss is
+# added to the objective), and depth (multi-token prediction).
+# MTP runs during training only -- at eval the head is just the output projection.
 # Run with: python train.py --config-name deepseek-v3
 
 name: deepseek-v3
@@ -39,6 +40,7 @@ model:
   gate: sigmoid                # <- NEW vs v2: sigmoid affinity, normalised top-k
   gamma: 0.001                 # bias step size, the whole balancing mechanism
   dropout: 0.2
+  depth: 1                     # <- NEW vs v2: MTP depth. 0 disables MTP entirely
 
 optimizer:
   _target_: torch.optim.AdamW
@@ -54,6 +56,7 @@ training:
   warmup_steps: 100
   grad_clip: 1.0
   aux_alpha: 0.01              # unused -- this model produces no balance loss
+  mtp_weight: 0.3              # lambda on the MTP loss; the paper decays 0.3 -> 0.1
 
 eval:
   log_every: 500

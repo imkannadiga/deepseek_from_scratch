@@ -158,6 +158,7 @@ def main(cfg: DictConfig):
         checkpoint_path=cfg.checkpoint.path,
         grad_clip=cfg.training.grad_clip,
         aux_alpha=cfg.training.get("aux_alpha", 0.01),
+        mtp_weight=cfg.training.get("mtp_weight", 0.3),
         tokenizer=tokenizer,
         prompt_text=cfg.eval.prompt,
         max_new_tokens=cfg.eval.max_new_tokens,

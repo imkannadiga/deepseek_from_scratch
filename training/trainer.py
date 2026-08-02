@@ -19,6 +19,7 @@ import torch
 import torch.nn.functional as F
 
 from models.layers.sparse_moe import collect_aux_loss
+from models.layers.mtp import collect_mtp_logits
 
 
 def _lr_multiplier(step, warmup_steps, n_steps, lr_min, lr_peak):
@@ -65,6 +66,8 @@ class Trainer:
         grad_clip=1.0,
         # --- weight on the MoE balance loss, ignored by aux-loss-free models ---
         aux_alpha=0.01,
+        # --- weight on the multi-token-prediction loss, ignored when depth=0 ---
+        mtp_weight=0.3,
         # --- generation ---
         tokenizer=None,
         prompt_text=None,
@@ -90,6 +93,7 @@ class Trainer:
         self.checkpoint_path  = checkpoint_path
         self.grad_clip        = grad_clip
         self.aux_alpha        = aux_alpha
+        self.mtp_weight       = mtp_weight
         self.tokenizer        = tokenizer
         self.prompt_text      = prompt_text
         self.max_new_tokens   = max_new_tokens
@@ -143,18 +147,42 @@ class Trainer:
             y : LongTensor (B, T)  -- target token ids (x shifted by 1)
 
         Returns:
-            ce  : scalar tensor -- cross-entropy, the number worth comparing
-                  across architectures
+            ce  : scalar tensor -- next-token cross-entropy, the number worth
+                  comparing across architectures
             aux : scalar tensor or None -- summed MoE balance loss, present only
                   while training a model that balances with an auxiliary loss
+            mtp : scalar tensor or None -- averaged multi-token-prediction loss,
+                  present only while training a model with depth > 0
         """
         logits = self.model(x)                        # (B, T, vocab_size)
         B, T, vocab_size = logits.shape
-        logits = logits.view(B * T, vocab_size)       # (B*T, vocab_size)
-        y = y.view(B * T)                             # (B*T,)
+        ce = F.cross_entropy(logits.view(B * T, vocab_size), y.view(B * T))
 
-        return F.cross_entropy(logits, y), collect_aux_loss(self.model)
-        
+        return ce, collect_aux_loss(self.model), self._mtp_loss(y)
+
+
+    def _mtp_loss(self, y):
+        """
+        Cross-entropy for each extra prediction depth, averaged.
+
+        Depth d predicts d+1 tokens ahead, so it only covers the first T-(d+1)
+        positions and its targets start d+1 steps into y. Returns None outside
+        training, or when the model has no MTP head.
+        """
+        mtp_logits = collect_mtp_logits(self.model)
+        if not mtp_logits:
+            return None
+
+        losses = []
+        for d, logits_d in enumerate(mtp_logits):
+            target_d = y[:, d + 1:]                       # (B, T-d-1)
+            B_d, T_d = target_d.shape
+            losses.append(F.cross_entropy(
+                logits_d.reshape(B_d * T_d, -1),
+                target_d.reshape(B_d * T_d),
+            ))
+
+        return sum(losses) / len(losses)
 
 
     # ------------------------------------------------------------------
@@ -174,11 +202,17 @@ class Trainer:
 
         self.optimizer.zero_grad()
 
-        ce, aux = self._forward_and_loss(x, y)
+        ce, aux, mtp = self._forward_and_loss(x, y)
 
-        # The balance loss trains the router toward even expert load. It is kept
-        # out of the reported number so aux-loss and aux-loss-free models compare
-        loss = ce if aux is None else ce + self.aux_alpha * aux
+        # Both extras are training signals only, and both stay out of the
+        # reported number so every architecture is compared on the same metric:
+        # the balance loss pushes the router toward even expert load, and the
+        # MTP loss trains the extra depths that get discarded at inference.
+        loss = ce
+        if aux is not None:
+            loss = loss + self.aux_alpha * aux
+        if mtp is not None:
+            loss = loss + self.mtp_weight * mtp
         loss.backward()
 
         if self.grad_clip is not None:
@@ -207,7 +241,7 @@ class Trainer:
 
         for _ in range(self.eval_steps):
             x, y = self.dataset.get_batch(split, self.batch_size, self.seq_len)
-            total_loss, _ = self._forward_and_loss(x, y)
+            total_loss, _, _ = self._forward_and_loss(x, y)
             total_losses.append(total_loss.item())
         mean_loss = sum(total_losses) / len(total_losses)
 
