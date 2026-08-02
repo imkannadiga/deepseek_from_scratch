@@ -2,7 +2,7 @@
 training/trainer.py
 
 Core training loop with:
-  - linear warmup + linear decay LR schedule via torch.optim.lr_scheduler.LambdaLR
+  - linear warmup + cosine decay LR schedule via torch.optim.lr_scheduler.LambdaLR
   - gradient clipping
   - periodic test loss evaluation
   - autoregressive generation sample at each eval step (with timing)
@@ -30,7 +30,8 @@ def _lr_multiplier(step, warmup_steps, n_steps, lr_min, lr_peak):
     LambdaLR multiplies this against the optimizer's base LR (lr_peak).
 
     Phase 1 -- linear warmup:  multiplier goes 0 -> 1 over warmup_steps
-    Phase 2 -- linear decay:   multiplier goes 1 -> (lr_min/lr_peak) over remaining steps
+    Phase 2 -- cosine decay:   multiplier follows a half cosine from 1 down to
+                               (lr_min/lr_peak) over the remaining steps
     """
     if step < warmup_steps:
         return step / max(warmup_steps, 1)
@@ -40,7 +41,10 @@ def _lr_multiplier(step, warmup_steps, n_steps, lr_min, lr_peak):
         return lr_min / lr_peak
 
     progress = (step - warmup_steps) / (n_steps - warmup_steps)  # 0.0 -> 1.0
-    return 1.0 - progress * (1.0 - lr_min / lr_peak)
+    progress = min(progress, 1.0)   # past n_steps the cosine would turn back up
+
+    floor = lr_min / lr_peak
+    return floor + 0.5 * (1.0 - floor) * (1.0 + math.cos(math.pi * progress))
 
 
 class Trainer:

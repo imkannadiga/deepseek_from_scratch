@@ -52,16 +52,16 @@ training:
   batch_size: 256
   seq_len: 512                 # must be <= model.max_seq_length
   lr_peak: 3e-4
-  lr_min: 3e-6
-  warmup_steps: 100
+  lr_min: 3e-5
+  warmup_steps: 50
   grad_clip: 1.0
   aux_alpha: 0.01              # unused -- this model produces no balance loss
   mtp_weight: 0.3              # lambda on the MTP loss; the paper decays 0.3 -> 0.1
 
 eval:
   log_every: 500
-  eval_every: 1000
-  eval_steps: 50
+  eval_every: 50
+  eval_steps: 100
   prompt: "First Citizen:\nBefore we proceed"
   max_new_tokens: 100
   temperature: 0.8
