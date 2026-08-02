@@ -15,6 +15,7 @@ class MoE(torch.nn.Module):
         self.gamma = gamma
         self.moe_loss = moe_loss
         self.aux_loss = None
+        self.last_counts = None
 
         self.experts_routed = torch.nn.ModuleList([Expert(embed_dim, d_ff_routed, dropout) for _ in range(n_experts_routed)])
         self.experts_shared = torch.nn.ModuleList([Expert(embed_dim, d_ff_shared, dropout) for _ in range(n_experts_shared)])
@@ -48,6 +49,9 @@ class MoE(torch.nn.Module):
         for expert in self.experts_shared:
             final_output += expert(x_flat)
 
+        # Kept for load-balance reporting, not used by the forward pass
+        self.last_counts = expert_counts.detach()
+
         # Balancing is a training-time concern only. V2 pays for it with a loss
         # term; V3 gets it free by nudging the router bias instead.
         self.aux_loss = None
@@ -74,6 +78,20 @@ class MoE(torch.nn.Module):
         f = expert_counts * self.n_experts_routed / (self.top_k_routed * n_tokens)
         P = affinity.mean(dim=0)
         return (f * P).sum()
+
+
+def expert_maxvio(model):
+    # DeepSeek's MaxVio: how far the busiest expert sits above an even share,
+    # averaged over MoE layers. 0.0 is perfect balance, higher is worse. This is
+    # the number that says whether aux-loss-free balancing actually balances.
+    vios = []
+    for m in model.modules():
+        if isinstance(m, MoE) and m.last_counts is not None:
+            counts = m.last_counts
+            mean = counts.mean()
+            if mean > 0:
+                vios.append(((counts.max() - mean) / mean).item())
+    return sum(vios) / len(vios) if vios else None
 
 
 def collect_aux_loss(model):

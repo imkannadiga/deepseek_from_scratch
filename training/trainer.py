@@ -11,14 +11,16 @@ Core training loop with:
 """
 
 import os
+import json
 import math
+import resource
 import time
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 
-from models.layers.sparse_moe import collect_aux_loss
+from models.layers.sparse_moe import collect_aux_loss, expert_maxvio
 from models.layers.mtp import collect_mtp_logits
 
 
@@ -75,6 +77,9 @@ class Trainer:
         temperature=0.8,
         # --- run config, stored in the checkpoint so it can rebuild the model ---
         config=None,
+        # --- ablation reporting: where to dump metrics, and static model facts ---
+        metrics_path=None,
+        model_stats=None,
     ):
         self.model            = model
         self.dataset          = dataset
@@ -99,10 +104,21 @@ class Trainer:
         self.max_new_tokens   = max_new_tokens
         self.temperature      = temperature
         self.config           = config
+        self.metrics_path     = metrics_path
+        self.model_stats      = model_stats or {}
 
         # running stats
         self.step             = 0
         self.train_loss_accum = []
+
+        # --- ablation metrics, merged per step and flushed at the end ---
+        self._by_step         = {}
+        self.best_test_loss   = float("inf")
+        self.best_test_step   = -1
+        self.final_val_loss   = None
+        self.final_train_loss = None
+        self.wall_clock_s     = 0.0
+        self.gen_tok_per_s    = None
 
         # --- LR scheduler ---
         # optimizer's base LR must be lr_peak -- the scheduler multiplies
@@ -258,6 +274,7 @@ class Trainer:
                 greedy=True,
             )
             greedy_time = time.time() - t0
+            self.gen_tok_per_s = self.max_new_tokens / greedy_time
             greedy_text = self.tokenizer.decode(greedy_ids.tolist())
             print(
                 f"Greedy  "
@@ -387,6 +404,54 @@ class Trainer:
 
 
     # ------------------------------------------------------------------
+    # ablation metrics
+    # ------------------------------------------------------------------
+
+    def _record(self, step, **fields):
+        # Train and test land on different steps, so merge into one row per step
+        row = self._by_step.setdefault(step, {"step": step})
+        row.update({k: v for k, v in fields.items() if v is not None})
+
+
+    def metrics(self):
+        """Everything the sweep needs to compare this run against the others."""
+        history = [self._by_step[k] for k in sorted(self._by_step)]
+        tokens_per_step = self.batch_size * self.seq_len
+
+        return {
+            **self.model_stats,
+            "n_steps":          self.n_steps,
+            "batch_size":       self.batch_size,
+            "seq_len":          self.seq_len,
+            "tokens_per_step":  tokens_per_step,
+            "tokens_seen":      self.n_steps * tokens_per_step,
+            "device":           self.device,
+            "best_test_loss":   None if self.best_test_step < 0 else self.best_test_loss,
+            "best_test_step":   self.best_test_step,
+            "final_val_loss":   self.final_val_loss,
+            "final_train_loss": self.final_train_loss,
+            "wall_clock_s":     self.wall_clock_s,
+            "s_per_step":       self.wall_clock_s / max(self.n_steps, 1),
+            "train_tokens_per_s": self.n_steps * tokens_per_step / max(self.wall_clock_s, 1e-9),
+            "gen_tok_per_s":    self.gen_tok_per_s,
+            "final_maxvio":     expert_maxvio(self.model),
+            # ru_maxrss is KB on Linux -- peak for this process, so one run per
+            # process is what makes this number meaningful
+            "peak_rss_gb":      resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e6,
+            "history":          history,
+        }
+
+
+    def _save_metrics(self):
+        if self.metrics_path is None:
+            return
+        os.makedirs(os.path.dirname(self.metrics_path), exist_ok=True)
+        with open(self.metrics_path, "w") as f:
+            json.dump(self.metrics(), f, indent=2)
+        print(f"Metrics saved -> {self.metrics_path}")
+
+
+    # ------------------------------------------------------------------
     # main training loop
     # ------------------------------------------------------------------
 
@@ -402,6 +467,7 @@ class Trainer:
                   f"{self.max_new_tokens} new): {self.prompt_text!r}")
         print()
 
+        run_start = time.time()
         t0 = time.time()
 
         for step in range(self.n_steps):
@@ -409,7 +475,7 @@ class Trainer:
 
             # --- train ---
             loss = self._train_step()
-            self.train_loss_accum.append(loss)            
+            self.train_loss_accum.append(loss)
 
             # --- log ---
             if step % self.log_every == 0 and step > 0:
@@ -417,12 +483,26 @@ class Trainer:
                 self._log(step, avg_loss, t0, "train")
                 self.train_loss_accum = []
 
+                self.final_train_loss = avg_loss
+                self._record(
+                    step,
+                    train_loss=avg_loss,
+                    lr=self.scheduler.get_last_lr()[0],
+                    elapsed_s=time.time() - run_start,
+                    maxvio=expert_maxvio(self.model),
+                )
+
                 t0 = time.time()
 
             # --- eval ---
             if step % self.eval_every == 0 and step > 0:
                 test_loss = self._eval_loss("test")
                 self._log(step, test_loss, t0, "test")
+
+                self._record(step, test_loss=test_loss)
+                if test_loss < self.best_test_loss:
+                    self.best_test_loss = test_loss
+                    self.best_test_step = step
 
             # --- checkpoint ---
             if step % self.save_every == 0 and step > 0:
@@ -437,6 +517,11 @@ class Trainer:
             f"Final val loss: {val_loss:.4f} "
         )
 
+        self.final_val_loss = val_loss
+        self.wall_clock_s = time.time() - run_start
+
         # --- final checkpoint ---
         self._save_checkpoint()
         print(f"Final model saved -> {self.checkpoint_path}")
+
+        self._save_metrics()

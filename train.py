@@ -11,6 +11,7 @@ Usage:
     python train.py --config-name deepseek-v2 training.n_steps=1000 compile=false
 """
 
+import os
 import time
 
 import hydra
@@ -20,7 +21,55 @@ from omegaconf import DictConfig, OmegaConf
 
 from tokenizer.bpe_tokenizer import BPETokenizer
 from data.shakesphere import ShakespeareDataset
+from models.layers.mtp import MultiTokenPredictionHead
 from training.trainer import Trainer
+
+
+def model_stats(model, cfg):
+    """
+    Static facts that make architectures comparable: what each token actually
+    pays for, and what the KV cache costs.
+
+    Routed experts only fire top_k at a time, and the MTP head is discarded at
+    inference, so neither belongs in the active count.
+    """
+    total = sum(p.numel() for p in model.parameters())
+    routed = sum(p.numel() for n, p in model.named_parameters() if "experts_routed" in n)
+
+    # MTP cost is everything in the head except the un-embedding, which the main
+    # next-token head shares. Zero for models without an MTP head, and for depth=0.
+    mtp = 0
+    for module in model.modules():
+        if isinstance(module, MultiTokenPredictionHead):
+            mtp = sum(p.numel() for n, p in module.named_parameters()
+                      if not n.startswith("out_proj."))
+            break
+
+    n_routed = cfg.model.get("n_experts_routed", 0)
+    top_k = cfg.model.get("top_k_routed", 0)
+    active = total - mtp
+    if routed and n_routed:
+        active = active - routed + routed * top_k // n_routed
+
+    # MLA caches a compressed latent plus one shared RoPE key head; MHA caches
+    # a full K and V per token
+    if "d_kv" in cfg.model:
+        kv = cfg.model.d_kv + cfg.model.rope_head_dim
+    else:
+        kv = 2 * cfg.model.d_in
+
+    return {
+        "name":            cfg.name,
+        "target":          cfg.model._target_,
+        "params_total":    total,
+        "params_active":   active,
+        "params_mtp":      mtp,
+        "params_routed_experts": routed,
+        "kv_floats_per_token_per_layer": kv,
+        "kv_cache_bytes_at_max_seq": kv * cfg.model.max_seq_length * cfg.model.n_blocks * 4,
+        "n_blocks":        cfg.model.n_blocks,
+        "d_in":            cfg.model.d_in,
+    }
 
 
 @hydra.main(version_base=None, config_path="configs", config_name="deepseek-v2")
@@ -100,9 +149,10 @@ def main(cfg: DictConfig):
     # is a config change and never a code change here
     model = instantiate(cfg.model, vocab_size=vocab_size).to(device)
 
-    n_params = sum(p.numel() for p in model.parameters())
+    stats = model_stats(model, cfg)
     print(f"Model: {cfg.model._target_}")
-    print(f"Model parameters: {n_params:,}")
+    print(f"Model parameters: {stats['params_total']:,} "
+          f"(active/token {stats['params_active']:,})")
     print(f"Device: {device}")
 
     # one forward pass to confirm shapes before training
@@ -164,6 +214,8 @@ def main(cfg: DictConfig):
         max_new_tokens=cfg.eval.max_new_tokens,
         temperature=cfg.eval.temperature,
         config=OmegaConf.to_container(cfg, resolve=True),
+        model_stats=stats,
+        metrics_path=os.path.join(os.path.dirname(cfg.checkpoint.path), "metrics.json"),
     )
 
     trainer.train()
