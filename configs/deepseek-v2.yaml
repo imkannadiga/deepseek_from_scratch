@@ -30,9 +30,9 @@ model:
   n_blocks: 4
   transformer_n_heads: 4       # head_dim = 8
   rope_head_dim: 4             # head_dim/2, matching the paper's ratio; must be even
-  n_experts_routed: 16         # fine-grained: 16 small experts instead of 8 big ones
-  top_k_routed: 6
-  d_ff_routed: 32              # 1 shared (64) + 6 routed (6*32) = gpt-2's 256
+  n_experts_routed: 15         # v1's 8 experts split 2-way into 16, one isolated as shared
+  top_k_routed: 3
+  d_ff_routed: 64              # 16*64 total and 4*64 active both match v1's 8*128 / 2*128
   n_experts_shared: 1          # shared expert isolation: always on, never routed
   d_ff_shared: 64
   moe_loss: aux

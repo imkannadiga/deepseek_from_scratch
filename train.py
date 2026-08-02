@@ -34,16 +34,23 @@ def model_stats(model, cfg):
     inference, so neither belongs in the active count.
     """
     total = sum(p.numel() for p in model.parameters())
-    routed = sum(p.numel() for n, p in model.named_parameters() if "experts_routed" in n)
 
     # MTP cost is everything in the head except the un-embedding, which the main
     # next-token head shares. Zero for models without an MTP head, and for depth=0.
     mtp = 0
-    for module in model.modules():
+    mtp_names = set()
+    for prefix, module in model.named_modules():
         if isinstance(module, MultiTokenPredictionHead):
-            mtp = sum(p.numel() for n, p in module.named_parameters()
-                      if not n.startswith("out_proj."))
+            named = [(n, p) for n, p in module.named_parameters()
+                     if not n.startswith("out_proj.")]
+            mtp = sum(p.numel() for _, p in named)
+            mtp_names = {f"{prefix}.{n}" for n, _ in named}
             break
+
+    # The MTP head carries its own MoE. Those experts already sit inside `mtp`,
+    # so they must not be counted here too or active subtracts them twice.
+    routed = sum(p.numel() for n, p in model.named_parameters()
+                 if "experts_routed" in n and n not in mtp_names)
 
     n_routed = cfg.model.get("n_experts_routed", 0)
     top_k = cfg.model.get("top_k_routed", 0)
