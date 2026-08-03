@@ -16,8 +16,13 @@ class MultiHeadAttention(torch.nn.Module):
 
     self.W_o = torch.nn.Linear(d_model, d_out, bias=False)
 
-  def forward(self, x):
+  def forward(self, x, cache=None, layer_idx=None):
     B, num_tokens, d_in = x.shape
+
+    # How many tokens are already cached -- 0 during training and prefill
+    past_len = cache.get_seq_length(layer_idx) if cache is not None else 0
+    total_len = past_len + num_tokens
+
     # Pass through Q, K and V matrices
     Q = self.Q_weights(x)
     K = self.K_weights(x)
@@ -40,17 +45,21 @@ class MultiHeadAttention(torch.nn.Module):
 
     # Now the shape is (B, num_heads, num_tokens, head_dim)
 
+    if cache is not None:
+      K, V = cache.update(layer_idx, K, V)   # (B, num_heads, total_len, head_dim)
+
     # Compute Q*K_trans on the num_heads
     attn_scores = Q @ K.transpose(-2, -1)
 
     attn_scores = attn_scores / K.shape[-1] ** 0.5
 
-    # The shape is (B, num_heads, num_tokens, num_tokens)
+    # The shape is (B, num_heads, num_tokens, total_len)
 
-    # Mask upper triangle and replace with -inf
+    # Mask upper triangle and replace with -inf. Queries sit at absolute
+    # positions past_len..total_len-1, keys at 0..total_len-1.
 
-    mask = torch.ones((num_tokens, num_tokens), device=x.device)
-    mask = torch.tril(mask)
+    mask = torch.ones((total_len, total_len), device=x.device)
+    mask = torch.tril(mask)[past_len:total_len, :total_len]
 
     masked_attn_scores = attn_scores.masked_fill(mask==torch.tensor(0.0, device=x.device), -torch.inf)
 

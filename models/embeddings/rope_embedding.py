@@ -12,11 +12,13 @@ class RopeEmbedding(torch.nn.Module):
         self.register_buffer("cos", angles.cos())
         self.register_buffer("sin", angles.sin())
 
-    def forward(self, x):
+    def forward(self, x, offset=0):
         B, n_heads, T, head_dim = x.shape
 
-        cos = self.cos[:T]   # (T, head_dim)
-        sin = self.sin[:T]   # (T, head_dim)
+        # offset is how many tokens already sit in the KV cache. Without it a
+        # decode step would rotate the new token as if it were at position 0.
+        cos = self.cos[offset:offset + T]   # (T, head_dim)
+        sin = self.sin[offset:offset + T]   # (T, head_dim)
 
         x_even = x[..., 0::2]
         x_odd  = x[..., 1::2]

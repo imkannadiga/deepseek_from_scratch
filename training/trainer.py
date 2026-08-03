@@ -22,6 +22,7 @@ import torch.nn.functional as F
 
 from models.layers.sparse_moe import collect_aux_loss, expert_maxvio
 from models.layers.mtp import collect_mtp_logits
+from models.helpers.kv_cache import make_cache
 
 
 def _lr_multiplier(step, warmup_steps, n_steps, lr_min, lr_peak):
@@ -314,12 +315,9 @@ class Trainer:
     @torch.no_grad()
     def _generate(self, prompt_ids, max_new_tokens, temperature=1.0, greedy=False):
         """
-        Naive autoregressive generation -- full forward pass every step,
-        no KV cache.
-
-        This is the baseline whose tok/s numbers you'll compare against
-        once you implement caching. The interface stays identical when
-        you swap in the cached version.
+        Autoregressive generation with a KV cache: the prompt is prefilled in
+        one pass, then each new token is a single-token forward that reuses
+        every key/value already computed.
 
         Args:
             prompt_ids     : 1D LongTensor (T_prompt,)
@@ -333,16 +331,15 @@ class Trainer:
         # add batch dimension: (T_prompt,) -> (1, T_prompt)
         context = prompt_ids.unsqueeze(0)
 
-        for _ in range(max_new_tokens):
+        # crop the prompt so prompt + generated still fits the context window --
+        # the cache holds every token, so there is nothing to slide off later
+        keep = max(1, self.seq_len - max_new_tokens)
+        cache = make_cache(self.model)
 
-            # crop to seq_len -- positional embeddings only go up to seq_len
-            # positions. once context grows beyond that, the model "forgets"
-            # the oldest tokens (hard context window limit)
-            context_cropped = context[:, -self.seq_len:]   # (1, T')
+        # prefill: one pass over the prompt, filling the cache
+        logits = self.model(context[:, -keep:], cache=cache)   # (1, T_prompt, vocab_size)
 
-            # full forward pass -- naive: recomputes attention over full
-            # context every single step. KV cache eliminates this redundancy
-            logits = self.model(context_cropped)             # (1, T', vocab_size)
+        for i in range(max_new_tokens):
 
             # only the last position predicts the next token
             last_logits = logits[:, -1, :]                 # (1, vocab_size)
@@ -360,6 +357,11 @@ class Trainer:
                 )                                           # (1, 1)
 
             context = torch.cat([context, next_token], dim=1)   # (1, T'+1)
+
+            # decode: feed only the new token, the cache supplies the history.
+            # skipped on the last iteration -- nothing would consume it
+            if i < max_new_tokens - 1:
+                logits = self.model(next_token, cache=cache)
 
         # drop batch dimension
         return context.squeeze(0)   # (T_prompt + max_new_tokens,)

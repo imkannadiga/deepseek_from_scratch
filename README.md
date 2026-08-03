@@ -1,12 +1,12 @@
 # DeepSeek From Scratch
 
-Building a complete LLM pipeline — architecture, training, and inference — entirely from scratch, to demonstrate an end-to-end, nuts-and-bolts understanding of how modern language models like DeepSeek actually work.
+Four language model architectures built from scratch in PyTorch — GPT-2, then DeepSeek V1, V2, and V3 — each adding one paper's contribution on top of the last, then trained head-to-head on the same data to measure what each idea is actually worth.
 
-This project follows Raj Dandekar's "Build a DeepSeek Model from Scratch" course as a spine, with additional training stages (GRPO, SFT) and a serving layer planned on top. Nothing here is copy-pasted from a library — attention, tokenization, the training loop, and the data pipeline are all hand-implemented in PyTorch to build real intuition for the mechanics, not just the API surface.
+Nothing is imported from a modelling library. Attention, MLA, RoPE, the MoE router, multi-token prediction, the BPE tokenizer, and the training loop are all hand-implemented.
 
-## Results: four-stage architecture ablation
+## Results
 
-Four architectures trained on identical data with an identical budget, each stage adding one paper's contribution on top of the previous one. **Every stage improves on the one before it, on both held-out splits.**
+Same data, same budget, one architectural change per stage. **Every stage improves on the one before it, on both held-out splits.**
 
 **Budget:** 1,000 steps × 32 batch × 512 seq = 16,384,000 tokens, on CUDA.
 
@@ -39,111 +39,80 @@ Four architectures trained on identical data with an identical budget, each stag
 
 ### What the numbers say
 
-- **The sparse models win while doing less work per token.** v1 beats the dense baseline by 0.09 nats using **27% fewer active parameters** (9.4M vs 12.9M); v2 and v3 beat it by 0.12-0.14 nats on ~13% fewer. MoE capacity is paying for itself.
+- **The sparse models win while doing less work per token.** v1 beats the dense baseline by 0.09 nats using **27% fewer active parameters** (9.4M vs 12.9M); v2 and v3 beat it by 0.12–0.14 nats on ~13% fewer. MoE capacity is paying for itself.
 - **MLA cuts the KV cache 3.4×** — 224 vs 768 floats per token per layer — while *improving* loss rather than trading it away.
 - **Aux-loss-free balancing works, and it is the cleanest single result here.** MaxVio falls 0.673 → 0.535 → 0.297. v3 balances its experts 56% better than v1 while adding *no* balancing term to the objective at all, where v1 and v2 pay for it with an auxiliary loss.
 - **MTP is free at inference.** v3's 3.56M-parameter prediction head trains the trunk and is then discarded, which is why its active count matches v2's despite a larger total.
 
 ### How to read this, and what it does not show
 
-Losses are pure next-token cross-entropy for all four models. The MoE balance loss and the MTP loss are training signals only and are excluded from every reported number, so the columns are directly comparable. `active/tok` excludes experts a token does not route to, and the MTP head. `MaxVio` is `(max expert load − mean) / mean`, averaged over MoE layers — 0 is perfect balance.
+Losses are pure next-token cross-entropy for all four models. The MoE balance loss and the MTP loss are training signals only and are excluded from every reported number, so the columns are directly comparable. `active/tok` excludes experts a token does not route to, and the MTP head. `MaxVio` is `(max expert load − mean) / mean` averaged over MoE layers — 0 is perfect balance.
 
 Three honest caveats:
 
 1. **1,000 steps is a short run.** Final train loss sits *above* eval loss for every model (dropout is on during training, off at eval) — these are underfitting, not overfitting. The ranking could shift at a longer budget.
-2. **`gen tok/s` cannot show MLA's advantage yet**, because KV caching is not implemented — generation recomputes the full forward pass every step. Read the `KV/tok/layer` column for the memory result instead.
-3. **The MoE throughput cost is an implementation artifact.** Experts are dispatched in a Python loop, so they serialize; production MoE batches them into grouped matmuls. Do not read the slowdown as a property of the architecture.
+2. **`gen tok/s` cannot show MLA's advantage yet**, because KV caching is not implemented — generation recomputes the full forward pass every step. Read `KV/tok/layer` for the memory result instead.
+3. **The MoE throughput cost is an implementation artifact.** Experts are dispatched in a Python loop, so they serialise; production MoE batches them into grouped matmuls. It is not a property of the architecture.
 
-Reproduce with:
+## The four architectures
 
-```bash
-python sweep.py --steps 1000 --batch-size 32
-```
+Each stage keeps everything from the previous one and changes exactly what is listed.
 
-## Why this project exists
+| | attention | position | FFN | balancing |
+|---|---|---|---|---|
+| **gpt-2** | MHA | sinusoidal | dense | — |
+| **deepseek-v1** | MHA | **RoPE** | **MoE** (8 experts, top-2) | auxiliary loss |
+| **deepseek-v2** | **MLA**, split-head RoPE | RoPE | **DeepSeekMoE** (fine-grained + 1 shared) | auxiliary loss |
+| **deepseek-v3** | MLA | RoPE | DeepSeekMoE | **aux-loss-free** (+ **MTP**) |
 
-Modern LLM engineering is often practiced at the level of calling APIs and wiring up frameworks. This repo goes the other direction: implement the actual components — multi-head attention, multi-head latent attention (MLA), a from-scratch BPE tokenizer, the training loop, learning rate scheduling — and verify each one works before moving to the next. The goal is depth, not speed.
+What the less obvious pieces do:
 
-## Current status: working end-to-end pipeline, GPT-2-style baseline trained
-
-### What's built and verified
-
-| Component | File | Status |
-|---|---|---|
-| Multi-head attention | [models/attention/multi_head_attention.py](models/attention/multi_head_attention.py) | Working — causal mask, head split, output projection |
-| Multi-head latent attention (RoPE-less MLA) | [models/attention/ropeless_mla.py](models/attention/ropeless_mla.py) | Working — down-projection to KV latent, up-projection to K/V. KV cache not yet implemented |
-| Transformer block (Pre-LN, MHA) | [models/blocks/mha_transformer.py](models/blocks/mha_transformer.py) | Working — Pre-LN, residual connections, GELU FFN (4x expansion), dropout |
-| Sinusoidal positional embedding | [models/embeddings/sin_embedding.py](models/embeddings/sin_embedding.py) | Working — vectorized precompute, sin/cos alternating columns |
-| GPT-2 model | [models/gpt.py](models/gpt.py) | Working — token + positional embedding, stacked transformer blocks, final LayerNorm, output head. Verified via overfit sanity check (loss → ~0 on a fixed batch) |
-| Hand-rolled BPE tokenizer | [tokenizer/bpe_tokenizer.py](tokenizer/bpe_tokenizer.py) | Working — category-aware pretokenization, frequency counting, merge loop, JSON save/load. Verified round-trip on the full corpus |
-| Shakespeare dataset | [data/shakesphere.py](data/shakesphere.py) | Working — tokenizes once into a flat tensor, 80/10/10 train/test/val split, random-window batch sampling |
-| Trainer | [training/trainer.py](training/trainer.py) | Working — full loop with grad clipping, LR warmup + linear decay, periodic eval, checkpointing, and naive autoregressive generation (greedy + temperature) with tok/s timing |
-| Entry point | [train.py](train.py) | Working — wires tokenizer → dataset → model → optimizer → trainer end to end |
-
-### First real training run
-
-A 1.3M-parameter GPT-2 (MHA-based, vocab_size=2000, d_in=128, 4 blocks, 4 heads, seq_len=128) was trained for 5,000 steps on CPU (~20 min) on the full Shakespeare corpus:
-
-- **Train loss:** 5.84 → 3.75
-- **Test loss:** 5.77 → 4.29
-- **Val loss:** 4.52
-- Generated text showed clear qualitative improvement over training — Shakespearean structure (speaker labels, dialogue format, period-appropriate vocabulary) visible by step ~1200, coherent sampled output by step ~3000
-
-Known, expected limitations at this stage: greedy decoding falls into repetition loops (a decoding-strategy limitation, not a model bug), loss plateaus around step 3000 because the model is undertrained rather than overfit, and there's a minor tokenization artifact in generated text from the small vocab.
-
-**Key numbers:** Shakespeare corpus is 1,115,393 characters → 379,967 tokens at vocab_size=2000. Tokenizer training takes ~32s on the full corpus (naive BPE, known bottleneck). Training runs at ~4 steps/sec on CPU; generation runs at ~500 tok/s with no KV cache.
-
-## Design decisions
-
-A few choices made deliberately, worth knowing for anyone reading the code:
-
-- **Separate block classes per attention type** (`MHATransformer`, and a planned `MLATransformer`) rather than one generic class with attention injected — chosen for clarity over generality while learning.
-- **Sinusoidal positional embeddings**, not learned — GPT-2 itself uses learned embeddings, but sinusoidal was chosen here for the learning value of implementing it directly.
-- **Character-level BPE**, not byte-level — simpler, and sufficient for an ASCII-only Shakespeare corpus.
-- **Pre-LN transformer blocks** (normalization before the sublayer, not after) — matches GPT-2/DeepSeek and trains more stably than Post-LN.
-- **Steps, not epochs**, for pretraining — matches real LLM pretraining practice and is consistent with random-window batch sampling.
-- **Three-way train/test/val split** — test loss is watched during training as an early-stopping signal; val is only touched at the very end.
-- **Tokenizer trained once, saved to JSON** — subsequent runs load the saved tokenizer, validated against the current config so a mismatch can't silently corrupt training.
-
-## What's next
-
-1. **MLA-based full model** — assemble a GPT-2 variant using `RopelessMLA` in place of standard MHA, with the same overfit/training verification the MHA model went through.
-2. **Mixture-of-Experts (MoE) layer** — router, top-k expert selection, aux-loss-free load balancing, plus an MoE transformer block.
-3. **KV cache inside MLA** — cache the compressed latent (`c_kv`) rather than full K/V tensors. The trainer already logs tok/s so cached vs. uncached generation speed can be compared directly.
-4. **Full DeepSeek-style model** — combine MLA + MoE + RoPE into one architecture.
-5. **Post-training** — GRPO for reasoning, SFT for instruction-following.
-6. **Serving** — a FastAPI endpoint and a Streamlit chatbot, benchmarked with and without KV caching.
-
-## End goal
-
-A complete, from-scratch LLM stack — architecture (MLA + MoE + RoPE), pretraining, reasoning-oriented post-training (GRPO), and a served, chattable endpoint — built component by component with each piece understood and verified, mirroring the real design decisions behind models like DeepSeek.
-
-## Repository layout
-
-```
-deepseek-from-scratch/
-├── models/
-│   ├── attention/        # multi_head_attention.py, ropeless_mla.py, causal_attention.py, self_attention.py
-│   ├── blocks/           # mha_transformer.py (MLATransformer planned)
-│   ├── embeddings/       # sin_embedding.py
-│   └── gpt.py            # GPT2 model (working)
-├── tokenizer/
-│   └── bpe_tokenizer.py  # hand-rolled BPE (working, saves/loads via JSON)
-├── data/
-│   ├── _data/             # raw corpus (tiny_shakesphere.txt)
-│   └── shakesphere.py     # ShakespeareDataset (working, 3-way split)
-├── training/
-│   └── trainer.py         # Trainer class (working)
-├── checkpoints/           # saved model/optimizer/scheduler state
-└── train.py                # entry point (working)
-```
+- **MLA** compresses K and V into a small latent, and that latent is what gets cached. Position has to be handled separately or it would be baked into the compression and break it, so each head splits into a compressed part carrying no position and a small RoPE part — with the RoPE key shared across all heads. Cache cost drops from full K and V to the latent plus one small vector, the 3.4× above.
+- **DeepSeekMoE** splits each expert into smaller ones and activates proportionally more of them (same total and active capacity, finer routing), then reserves one always-on shared expert that every token uses.
+- **Aux-loss-free balancing** drops the auxiliary loss entirely. A per-expert bias is nudged toward even load and steers *selection only* — gate values stay unbiased, so balancing never distorts the gradient.
+- **MTP** adds a head that predicts two tokens ahead, giving a denser training signal. It runs during training only and is discarded at inference.
 
 ## Running it
 
 ```bash
 python -m venv venv && source venv/bin/activate
-pip install -r requirements.txt   # torch, etc.
-python train.py
+pip install torch hydra-core
+
+python train.py --config-name deepseek-v3     # train one model
+python sweep.py --steps 1000 --batch-size 32  # train all four, emit the tables above
+python sample.py "First Citizen:" 200         # generate from a checkpoint
 ```
 
-`train.py` trains (or loads a cached) tokenizer, builds the dataset and model, and runs the full training loop with periodic logging, evaluation, checkpointing, and sample generation.
+Configuration is Hydra, one self-contained file per model in [configs/](configs/). Anything can be overridden from the command line:
+
+```bash
+python train.py --config-name deepseek-v3 training.n_steps=5000 model.depth=0
+```
+
+Because the model class is selected by `_target_` in the config, adding an architecture is a new YAML file and nothing else. `sweep.py` writes per-model `metrics.json`, a `report.md`, and full loss histories to `sweep_results/`; checkpoints store their own config, so `sample.py` rebuilds any architecture without being told which one it is.
+
+## Layout
+
+```text
+models/
+  gpt_v2.py  deepseek_v1.py  deepseek_v2.py  deepseek_v3.py
+  attention/    multi_head_attention.py, rope_mha.py, rope_mla.py, ropeless_mla.py
+  blocks/       mha_transformer.py, rope_mha_transformer.py, rope_mla_transformer.py
+  embeddings/   sin_embedding.py, rope_embedding.py
+  layers/       sparse_moe.py, top_k_router.py, expert.py, mtp.py
+tokenizer/      bpe_tokenizer.py      hand-rolled BPE, cached to disk per vocab size
+data/           shakesphere.py        tokenize once, 90/5/5 split, random-window batches
+training/       trainer.py            cosine LR + warmup, grad clip, eval, checkpointing
+configs/        one YAML per model
+train.py  sweep.py  sample.py
+```
+
+## What's next
+
+1. **KV cache in MLA** — cache the compressed latent instead of full K/V. This is what turns the 3.4× cache reduction into a measurable generation speedup; the harness already reports tok/s.
+2. **Batched expert dispatch** — replace the Python loop over experts with grouped matmuls, so the runtime numbers reflect the architecture rather than the implementation.
+3. **Longer runs on a larger corpus** — 1,000 steps on Shakespeare is enough to rank the architectures but not to separate them confidently.
+4. **Post-training** — SFT, then GRPO for reasoning.
+5. **Serving** — a FastAPI endpoint, benchmarked with and without KV caching.
+
+Built following Raj Dandekar's "Build a DeepSeek Model from Scratch" course as a spine, extended with the full V1→V3 ablation, Hydra configs, and the sweep harness.

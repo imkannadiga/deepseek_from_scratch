@@ -10,10 +10,12 @@ class SinosoidalPositionalEmbedding(torch.nn.Module):
 
         self._precompute()
 
-    def forward(self, x):
+    def forward(self, x, offset=0):
         B, T = x.shape
 
-        return self.embed_map[:T]
+        # offset is how many tokens already sit in the KV cache, so a decode
+        # step picks up where the prefill left off instead of restarting at 0
+        return self.embed_map[offset:offset + T]
 
     def _precompute(self):
         positions = torch.arange(self.max_length).unsqueeze(1)

@@ -27,15 +27,15 @@ class DeepSeek(torch.nn.Module):
         self.out_proj = torch.nn.Linear(d_in, vocab_size)
 
 
-    def forward(self, x):
+    def forward(self, x, cache=None):
         B, T = x.shape
 
         # Token embedding only -- position is injected by RoPE inside attention
         x_embed = self.input_embedding(x)
 
         # n transformer blocks
-        for trans in self.transformer_blocks:
-            x_embed = trans(x_embed)
+        for layer_idx, trans in enumerate(self.transformer_blocks):
+            x_embed = trans(x_embed, cache=cache, layer_idx=layer_idx)
 
         # Layer norm
         x_norm = self.final_ln(x_embed)

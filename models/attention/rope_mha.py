@@ -25,8 +25,14 @@ class RopeMHA(torch.nn.Module):
 
         self.W_o = torch.nn.Linear(d_model, d_out, bias=False)
 
-    def forward(self, x):
+    def forward(self, x, cache=None, layer_idx=None):
         B, num_tokens, d_in = x.shape
+
+        # How many tokens are already cached -- 0 during training and prefill
+        past_len = cache.get_seq_length(layer_idx) if cache is not None else 0
+        total_len = past_len + num_tokens
+        assert total_len <= self.mask.shape[0], \
+            f"context {total_len} exceeds max_seq_len {self.mask.shape[0]}"
 
         # Pass through Q, K and V matrices
         Q = self.Q_weights(x)
@@ -39,16 +45,21 @@ class RopeMHA(torch.nn.Module):
         K = K.view(B, num_tokens, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
         V = V.view(B, num_tokens, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
 
-        # RoPE replaces the additive positional embedding -- Q and K only
-        Q = self.rope(Q)
-        K = self.rope(K)
+        # RoPE replaces the additive positional embedding -- Q and K only.
+        # Rotate before caching so cached keys are already at their true position.
+        Q = self.rope(Q, offset=past_len)
+        K = self.rope(K, offset=past_len)
 
-        # (B, n_heads, n_tokens, n_tokens)
+        if cache is not None:
+            K, V = cache.update(layer_idx, K, V)   # (B, n_heads, total_len, head_dim)
+
+        # (B, n_heads, n_tokens, total_len)
         attn_scores = (Q @ K.transpose(-2, -1)) / (self.head_dim ** 0.5)
 
-        # Mask upper triangle with -inf
+        # Mask upper triangle with -inf. Queries sit at absolute positions
+        # past_len..total_len-1, keys at 0..total_len-1.
         attn_scores = attn_scores.masked_fill(
-            self.mask[:num_tokens, :num_tokens] == 0.0, -torch.inf
+            self.mask[past_len:total_len, :total_len] == 0.0, -torch.inf
         )
 
         attn_weights = torch.softmax(attn_scores, dim=-1)

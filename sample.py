@@ -16,6 +16,7 @@ Usage:
 import argparse
 import os
 import pickle
+import time
 
 import torch
 import torch.nn.functional as F
@@ -23,6 +24,7 @@ from hydra.utils import instantiate
 from omegaconf import OmegaConf
 
 from tokenizer.bpe_tokenizer import BPETokenizer
+from models.helpers.kv_cache import make_cache
 
 DEFAULT_CKPT = "checkpoints/deepseek-v2/train.pt"
 
@@ -86,10 +88,15 @@ def load_model(checkpoint, cfg, vocab_size, device):
 def stream_generate(model, tokenizer, prompt_ids, max_new_tokens, max_seq_len, temperature, greedy):
     context = prompt_ids.unsqueeze(0)   # (1, T_prompt)
 
-    for _ in range(max_new_tokens):
-        context_cropped = context[:, -max_seq_len:]
+    # crop the prompt so prompt + generated still fits the context window --
+    # the cache holds every token, so there is nothing to slide off later
+    keep = max(1, max_seq_len - max_new_tokens)
+    cache = make_cache(model)
 
-        logits = model(context_cropped)       # (1, T', vocab_size)
+    # prefill the prompt in one pass, then decode a token at a time
+    logits = model(context[:, -keep:], cache=cache)   # (1, T_prompt, vocab_size)
+
+    for i in range(max_new_tokens):
         last_logits = logits[:, -1, :]        # (1, vocab_size)
 
         if greedy:
@@ -105,7 +112,12 @@ def stream_generate(model, tokenizer, prompt_ids, max_new_tokens, max_seq_len, t
         piece = tokenizer.decode([next_token.item()])
         print(piece, end="", flush=True)
 
+        # only the new token goes in; the cache supplies the history
+        if i < max_new_tokens - 1:
+            logits = model(next_token, cache=cache)
+
     print()
+    return cache
 
 
 def main():
@@ -126,7 +138,8 @@ def main():
     prompt_ids = torch.tensor(tokenizer.encode(args.prompt), dtype=torch.long, device=device)
 
     print(args.prompt, end="", flush=True)
-    stream_generate(
+    t0 = time.time()
+    cache = stream_generate(
         model,
         tokenizer,
         prompt_ids,
@@ -135,6 +148,9 @@ def main():
         temperature=args.temperature,
         greedy=args.greedy,
     )
+    dt = time.time() - t0
+    print(f"\n[{args.max_new_tokens / dt:.1f} tok/s, "
+          f"KV cache {cache.size_bytes() / 1e6:.2f} MB for {cache.get_seq_length(0)} tokens]")
 
 
 if __name__ == "__main__":

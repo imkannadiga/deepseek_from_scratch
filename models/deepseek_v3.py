@@ -40,7 +40,7 @@ class DeepSeek(torch.nn.Module):
                                                  moe_loss, gate, gamma)
 
 
-    def forward(self, x):
+    def forward(self, x, cache=None):
         B, T = x.shape
 
         # Token embedding only -- position is injected by RoPE inside attention
@@ -48,8 +48,8 @@ class DeepSeek(torch.nn.Module):
 
         # n transformer blocks
         hidden = x_embed
-        for trans in self.transformer_blocks:
-            hidden = trans(hidden)
+        for layer_idx, trans in enumerate(self.transformer_blocks):
+            hidden = trans(hidden, cache=cache, layer_idx=layer_idx)
 
         # Layer norm
         x_norm = self.final_ln(hidden)

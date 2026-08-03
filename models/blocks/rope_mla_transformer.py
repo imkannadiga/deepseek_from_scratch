@@ -27,14 +27,14 @@ class RopeMLATransformer(nn.Module):
                        n_experts_shared, self.d_in, d_ff_shared,
                        dropout_p, gamma, moe_loss, gate)
 
-    def forward(self, x):
+    def forward(self, x, cache=None, layer_idx=None):
         B, n_tokens, d_in = x.shape
 
         # Layer Norm 1
         norm_x = self.ln_1(x)
 
         # Multi-head latent attention with split-head RoPE
-        ctx = self.attn(norm_x)
+        ctx = self.attn(norm_x, cache, layer_idx)
 
         # Dropout
         ctx = self.dropout(ctx)

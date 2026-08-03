@@ -22,15 +22,19 @@ class GPT2(torch.nn.Module):
         self.out_proj = torch.nn.Linear(d_in, vocab_size)
 
         
-    def forward(self, x):
+    def forward(self, x, cache=None):
         B, T = x.shape
 
+        # Tokens already cached, so a decode step keeps counting positions
+        # from where the prefill stopped instead of restarting at 0
+        past_len = cache.get_seq_length(0) if cache is not None else 0
+
         # Token embedding + Positional embedding
-        x_embed = self.input_embedding(x) + self.pos_embedding(x)
+        x_embed = self.input_embedding(x) + self.pos_embedding(x, offset=past_len)
 
         # N transformer blocks
-        for trans in self.transformer_blocks:
-            x_embed = trans(x_embed)
+        for layer_idx, trans in enumerate(self.transformer_blocks):
+            x_embed = trans(x_embed, cache=cache, layer_idx=layer_idx)
 
         # Layer norm
         x_norm = self.final_ln(x_embed)

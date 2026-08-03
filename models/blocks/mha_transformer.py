@@ -26,14 +26,14 @@ class MHATransformer(nn.Module):
             nn.Linear(d_ff, d_in),
         )
 
-    def forward(self, x):
+    def forward(self, x, cache=None, layer_idx=None):
         B, n_tokens, d_in = x.shape
 
         # Layer Norm 1
         norm_x = self.ln_1(x)
 
         # Multi-head attention
-        ctx = self.attn(norm_x)
+        ctx = self.attn(norm_x, cache, layer_idx)
 
         # Dropout
         ctx = self.dropout(ctx)
