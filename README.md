@@ -4,6 +4,62 @@ Building a complete LLM pipeline — architecture, training, and inference — e
 
 This project follows Raj Dandekar's "Build a DeepSeek Model from Scratch" course as a spine, with additional training stages (GRPO, SFT) and a serving layer planned on top. Nothing here is copy-pasted from a library — attention, tokenization, the training loop, and the data pipeline are all hand-implemented in PyTorch to build real intuition for the mechanics, not just the API surface.
 
+## Results: four-stage architecture ablation
+
+Four architectures trained on identical data with an identical budget, each stage adding one paper's contribution on top of the previous one. **Every stage improves on the one before it, on both held-out splits.**
+
+**Budget:** 1,000 steps × 32 batch × 512 seq = 16,384,000 tokens, on CUDA.
+
+### Quality
+
+| model | change | best test | @step | final val | final train |
+|---|---|---|---|---|---|
+| gpt-2 | MHA + dense FFN + sinusoidal | 4.3413 | 950 | 4.5612 | 4.7145 |
+| deepseek-v1 | + RoPE, + MoE | 4.2503 | 950 | 4.4861 | 4.5696 |
+| deepseek-v2 | + MLA, + DeepSeekMoE (fine-grained + shared) | 4.2235 | 900 | 4.4411 | 4.5621 |
+| deepseek-v3 | + aux-loss-free balancing, + MTP | **4.1985** | 950 | **4.4249** | 4.5524 |
+
+### Capacity and cost
+
+| model | total | active/tok | MTP | KV/tok/layer | MaxVio |
+|---|---|---|---|---|---|
+| gpt-2 | 12,945,336 | 12,945,336 | — | 768 | — |
+| deepseek-v1 | 20,067,048 | 9,422,568 | — | 768 | 0.673 |
+| deepseek-v2 | 21,914,856 | 11,270,376 | — | **224** | 0.535 |
+| deepseek-v3 | 25,475,384 | 11,267,376 | 3,563,528 | **224** | **0.297** |
+
+### Runtime
+
+| model | wall clock | s/step | train tok/s | gen tok/s | peak RSS |
+|---|---|---|---|---|---|
+| gpt-2 | 4.2 min | 0.25 | 64,898 | 666.0 | 1.47 GB |
+| deepseek-v1 | 6.3 min | 0.38 | 43,395 | 87.5 | 1.65 GB |
+| deepseek-v2 | 6.6 min | 0.40 | 41,191 | 82.3 | 1.81 GB |
+| deepseek-v3 | 7.4 min | 0.44 | 37,097 | 82.2 | 1.69 GB |
+
+### What the numbers say
+
+- **The sparse models win while doing less work per token.** v1 beats the dense baseline by 0.09 nats using **27% fewer active parameters** (9.4M vs 12.9M); v2 and v3 beat it by 0.12-0.14 nats on ~13% fewer. MoE capacity is paying for itself.
+- **MLA cuts the KV cache 3.4×** — 224 vs 768 floats per token per layer — while *improving* loss rather than trading it away.
+- **Aux-loss-free balancing works, and it is the cleanest single result here.** MaxVio falls 0.673 → 0.535 → 0.297. v3 balances its experts 56% better than v1 while adding *no* balancing term to the objective at all, where v1 and v2 pay for it with an auxiliary loss.
+- **MTP is free at inference.** v3's 3.56M-parameter prediction head trains the trunk and is then discarded, which is why its active count matches v2's despite a larger total.
+
+### How to read this, and what it does not show
+
+Losses are pure next-token cross-entropy for all four models. The MoE balance loss and the MTP loss are training signals only and are excluded from every reported number, so the columns are directly comparable. `active/tok` excludes experts a token does not route to, and the MTP head. `MaxVio` is `(max expert load − mean) / mean`, averaged over MoE layers — 0 is perfect balance.
+
+Three honest caveats:
+
+1. **1,000 steps is a short run.** Final train loss sits *above* eval loss for every model (dropout is on during training, off at eval) — these are underfitting, not overfitting. The ranking could shift at a longer budget.
+2. **`gen tok/s` cannot show MLA's advantage yet**, because KV caching is not implemented — generation recomputes the full forward pass every step. Read the `KV/tok/layer` column for the memory result instead.
+3. **The MoE throughput cost is an implementation artifact.** Experts are dispatched in a Python loop, so they serialize; production MoE batches them into grouped matmuls. Do not read the slowdown as a property of the architecture.
+
+Reproduce with:
+
+```bash
+python sweep.py --steps 1000 --batch-size 32
+```
+
 ## Why this project exists
 
 Modern LLM engineering is often practiced at the level of calling APIs and wiring up frameworks. This repo goes the other direction: implement the actual components — multi-head attention, multi-head latent attention (MLA), a from-scratch BPE tokenizer, the training loop, learning rate scheduling — and verify each one works before moving to the next. The goal is depth, not speed.
