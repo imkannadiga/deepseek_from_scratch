@@ -45,6 +45,9 @@ def parse_args():
                    help="Directory holding <model>/train.pt (a sweep run dir also works)")
     p.add_argument("--contexts", nargs="+", type=int, default=[64, 128, 256],
                    help="Prompt lengths to prefill before decoding")
+    p.add_argument("--batch", nargs="+", type=int, default=[1],
+                   help="Sequences decoded in parallel. Batch 1 is launch-overhead bound on "
+                        "a GPU; pass several (e.g. 1 8 32) to see where compute takes over")
     p.add_argument("--gen", type=int, default=64, help="Tokens to generate per measurement")
     p.add_argument("--runs", type=int, default=3, help="Timed repeats, best is reported")
     p.add_argument("--device", type=str, default=None, help="cuda | cpu (default: auto)")
@@ -174,34 +177,31 @@ def markdown(rows):
     return "\n".join([head, sep] + ["| " + " | ".join(str(c) for c in r) + " |" for r in rows[1:]])
 
 
-def build_tables(results, contexts, gen, skip_uncached):
+def build_tables(results, gen, skip_uncached):
     tables = []
 
-    kv = [["model", "ctx", "prefill", "cached tok/s"]
+    kv = [["model", "batch", "ctx", "prefill", "cached tok/s"]
           + ([] if skip_uncached else ["uncached tok/s", "speedup"])
           + ["cache", "KV/tok/layer", "max|diff|"]]
     for name, r in results.items():
-        for c in contexts:
-            m = r["by_context"].get(str(c))
-            if m is None:
-                continue
-            row = [name, c, f"{m['prefill_ms']:.1f}ms", f"{m['cached_tok_s']:.1f}"]
+        for m in r["runs"]:
+            row = [name, m["batch"], m["ctx"], f"{m['prefill_ms']:.1f}ms", f"{m['cached_tok_s']:.1f}"]
             if not skip_uncached:
                 row += [f"{m['uncached_tok_s']:.1f}", f"{m['kv_speedup']:.2f}x"]
             row += [f"{m['cache_mb']:.2f}MB", r["kv_floats_per_token_per_layer"], f"{m['max_diff']:.1e}"]
             kv.append(row)
     tables.append(("KV cache", kv,
-                   f"Generating {gen} tokens after a prompt of `ctx` tokens. `max|diff|` is cached "
-                   "decode against a single full forward -- float noise, so the cached path is the "
-                   "same function. Uncached recomputes every position each step."))
+                   f"Generating {gen} tokens per sequence after a prompt of `ctx` tokens. tok/s is "
+                   "aggregate across the batch. `max|diff|` is cached decode against a single full "
+                   "forward -- float noise, so the cached path is the same function. Uncached "
+                   "recomputes every position each step."))
 
-    absorbed = [["model", "ctx", "absorbed", "plain", "speedup"]]
+    absorbed = [["model", "batch", "ctx", "absorbed", "plain", "speedup"]]
     for name, r in results.items():
-        for c in contexts:
-            m = r["by_context"].get(str(c))
-            if m is None or m.get("plain_tok_s") is None:
+        for m in r["runs"]:
+            if m.get("plain_tok_s") is None:
                 continue
-            absorbed.append([name, c,
+            absorbed.append([name, m["batch"], m["ctx"],
                              f"{m['cached_tok_s']:.1f} tok/s",
                              f"{m['plain_tok_s']:.1f} tok/s",
                              f"{m['cached_tok_s'] / m['plain_tok_s']:.2f}x"])
@@ -210,7 +210,8 @@ def build_tables(results, contexts, gen, skip_uncached):
                        "Absorbed decode folds W_uk into W_q and W_uv into W_o, so K and V are never "
                        "materialised and attention runs in the compressed space. Plain rebuilds K and "
                        "V from the cached latent every step, so its cost grows with context while the "
-                       "absorbed path stays nearly flat."))
+                       "absorbed path stays nearly flat. Both are FLOP savings, so they only show up "
+                       "once the batch is large enough to be compute-bound rather than launch-bound."))
 
     return tables
 
@@ -222,7 +223,8 @@ def main():
 
     print(f"Device: {device}")
     print(f"Checkpoints: {args.checkpoint_dir}")
-    print(f"Contexts: {args.contexts}, generating {args.gen} tokens, best of {args.runs}\n")
+    print(f"Contexts: {args.contexts}, batches: {args.batch}, "
+          f"generating {args.gen} tokens/sequence, best of {args.runs}\n")
 
     results = {}
     for name in args.models:
@@ -243,57 +245,73 @@ def main():
         entry = {"step": step, "vocab_size": vocab_size,
                  "kv_floats_per_token_per_layer": kv_floats,
                  "params": sum(p.numel() for p in model.parameters()),
-                 "by_context": {}}
+                 "runs": []}
 
-        for ctx_len in args.contexts:
-            if ctx_len + args.gen > max_seq:
-                print(f"  ctx {ctx_len} + gen {args.gen} > max_seq {max_seq}, skipping")
-                continue
+        for batch in args.batch:
+            for ctx_len in args.contexts:
+                if ctx_len + args.gen > max_seq:
+                    print(f"  b{batch} ctx {ctx_len} + gen {args.gen} > max_seq {max_seq}, skipping")
+                    continue
 
-            prompt = torch.randint(0, vocab_size, (1, ctx_len), device=device)
+                # tok/s is aggregate across the batch -- that is the throughput
+                # number that matters, and the one that separates launch-bound
+                # from compute-bound
+                total_tokens = batch * args.gen
+                prompt = torch.randint(0, vocab_size, (batch, ctx_len), device=device)
 
-            # correctness gate before any timing
-            ids = torch.randint(0, vocab_size, (1, ctx_len + min(args.gen, 16)), device=device)
-            diff = max_logit_deviation(model, ids, ctx_len, device)
-            if diff > 1e-3:
-                print(f"  ctx {ctx_len}: CACHE MISMATCH ({diff:.2e}) -- not timing this")
-                continue
+                try:
+                    # correctness gate before any timing
+                    ids = torch.randint(0, vocab_size,
+                                        (batch, ctx_len + min(args.gen, 16)), device=device)
+                    diff = max_logit_deviation(model, ids, ctx_len, device)
+                    if diff > 1e-3:
+                        print(f"  b{batch} ctx {ctx_len}: CACHE MISMATCH ({diff:.2e}) -- not timing")
+                        continue
 
-            set_absorption(model, True)
-            prefill_s, decode_s = best_of_pair(
-                lambda: generate_cached(model, prompt, args.gen, device)[:2], args.runs)
-            cache = generate_cached(model, prompt, args.gen, device)[2]
+                    set_absorption(model, True)
+                    prefill_s, decode_s = best_of_pair(
+                        lambda: generate_cached(model, prompt, args.gen, device)[:2], args.runs)
+                    cache = generate_cached(model, prompt, args.gen, device)[2]
 
-            m = {
-                "prefill_ms": prefill_s * 1000,
-                "decode_s": decode_s,
-                "cached_tok_s": args.gen / decode_s,
-                "cache_mb": cache.size_bytes() / 1e6,
-                "cache_tokens": cache.get_seq_length(0),
-                "max_diff": diff,
-                "plain_tok_s": None,
-                "uncached_tok_s": None,
-                "kv_speedup": None,
-            }
+                    m = {
+                        "batch": batch,
+                        "ctx": ctx_len,
+                        "prefill_ms": prefill_s * 1000,
+                        "decode_s": decode_s,
+                        "cached_tok_s": total_tokens / decode_s,
+                        "cache_mb": cache.size_bytes() / 1e6,
+                        "cache_tokens": cache.get_seq_length(0),
+                        "max_diff": diff,
+                        "plain_tok_s": None,
+                        "uncached_tok_s": None,
+                        "kv_speedup": None,
+                    }
 
-            # absorbed vs plain, MLA only
-            if has_mla:
-                set_absorption(model, False)
-                plain_decode = best_of_pair(
-                    lambda: generate_cached(model, prompt, args.gen, device)[:2], args.runs)[1]
-                m["plain_tok_s"] = args.gen / plain_decode
-                set_absorption(model, True)
+                    # absorbed vs plain, MLA only
+                    if has_mla:
+                        set_absorption(model, False)
+                        plain_decode = best_of_pair(
+                            lambda: generate_cached(model, prompt, args.gen, device)[:2], args.runs)[1]
+                        m["plain_tok_s"] = total_tokens / plain_decode
+                        set_absorption(model, True)
 
-            if not args.skip_uncached:
-                un_s = best_of(
-                    lambda: generate_uncached(model, prompt, args.gen, device)[0], args.runs)
-                m["uncached_tok_s"] = args.gen / un_s
-                m["kv_speedup"] = un_s / decode_s
+                    if not args.skip_uncached:
+                        un_s = best_of(
+                            lambda: generate_uncached(model, prompt, args.gen, device)[0], args.runs)
+                        m["uncached_tok_s"] = total_tokens / un_s
+                        m["kv_speedup"] = un_s / decode_s
 
-            entry["by_context"][str(ctx_len)] = m
-            extra = f", plain {m['plain_tok_s']:.1f}" if m["plain_tok_s"] else ""
-            print(f"  ctx {ctx_len:4d}: {m['cached_tok_s']:7.1f} tok/s cached{extra}"
-                  f", cache {m['cache_mb']:.2f}MB")
+                except torch.OutOfMemoryError:
+                    print(f"  b{batch} ctx {ctx_len}: out of memory, skipping")
+                    set_absorption(model, True)
+                    if device == "cuda":
+                        torch.cuda.empty_cache()
+                    continue
+
+                entry["runs"].append(m)
+                extra = f", plain {m['plain_tok_s']:.1f}" if m["plain_tok_s"] else ""
+                print(f"  b{batch:<3d} ctx {ctx_len:4d}: {m['cached_tok_s']:8.1f} tok/s cached{extra}"
+                      f", cache {m['cache_mb']:.2f}MB")
 
         results[name] = entry
         print()
@@ -302,7 +320,7 @@ def main():
         print("No checkpoints benchmarked.")
         return
 
-    tables = build_tables(results, args.contexts, args.gen, args.skip_uncached)
+    tables = build_tables(results, args.gen, args.skip_uncached)
 
     print("=" * 78)
     print("INFERENCE BENCHMARK")
@@ -315,7 +333,7 @@ def main():
     if args.out:
         os.makedirs(args.out, exist_ok=True)
         md = [f"# Inference benchmark\n",
-              f"_{args.gen} tokens generated per measurement, best of {args.runs}, on {device}._\n"]
+              f"_{args.gen} tokens per sequence, best of {args.runs}, on {device}. tok/s is aggregate across the batch._\n"]
         for title, rows, note in tables:
             md += [f"## {title}\n", markdown(rows) + "\n", f"{note}\n"]
         with open(os.path.join(args.out, "report.md"), "w") as f:
