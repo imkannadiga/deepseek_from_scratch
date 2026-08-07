@@ -59,7 +59,7 @@ eval:
   log_every: 500
   eval_every: 50
   eval_steps: 100
-  prompt: "First Citizen:\nBefore we proceed"
+  prompt: "\n"
   max_new_tokens: 100
   temperature: 0.8
 

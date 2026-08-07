@@ -42,6 +42,9 @@ class RopeMLA(torch.nn.Module):
         # Lazily built products of the frozen weights, see _absorbed_matrices
         self._absorbed = None
 
+        # Off switch for benchmarking the absorbed path against the plain one
+        self.use_absorption = True
+
     def train(self, mode=True):
         # The weights move during training, so any absorbed product is stale
         self._absorbed = None
@@ -124,7 +127,7 @@ class RopeMLA(torch.nn.Module):
         # Absorption only pays off when there is a single query row. For a long
         # prefill the score matmul would run over d_kv instead of head_dim, which
         # is wider -- so prefill and training take the plain path.
-        if not self.training and num_tokens == 1:
+        if self.use_absorption and not self.training and num_tokens == 1:
             return self._attend_absorbed(x, c_kv, K_rope, Q_rope, past_len, total_len)
 
         return self._attend_plain(x, c_kv, K_rope, Q_rope, past_len, total_len)
